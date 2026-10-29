@@ -77,7 +77,8 @@ def _acquisition_lock(directory):
     except sqlite3.OperationalError as error:
         if database is not None:
             database.close()
-        if getattr(error, 'sqlite_errorcode', None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+        if (getattr(error, 'sqlite_errorcode', -1) in (5, 6)
+                or str(error).lower() in ('database is locked', 'database table is locked', 'database schema is locked')):
             raise ValueError('SOURCE_BUSY') from None
         raise ValueError('SOURCE_STORAGE_FAILED') from None
     try:
