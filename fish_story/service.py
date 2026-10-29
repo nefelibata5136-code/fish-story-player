@@ -152,12 +152,22 @@ class GameService:
 
     def stories(self):
         docs = [read_json(p) for p in sorted((PACKAGE / 'demo').glob('ch*.json'))]
-        result = [{'id': 'demo', 'title': '雾港来信 · 原创演示', 'chapters': [chapter_info(d) for d in docs],
-                   'public_distribution': True, 'license': 'CC0-1.0'}]
+        result = []
         for path in sorted((self.directory / 'stories').glob('*/manifest.json')):
             m = read_json(path)
-            result.append({k: m[k] for k in ('id', 'title', 'chapters', 'public_distribution')})
+            from .source import SOURCE_ID
+            is_detroit = (m.get('provenance', {}).get('source_id') == SOURCE_ID
+                          or m.get('verified_source_id') == SOURCE_ID)
+            result.append({**{k: m[k] for k in ('id', 'title', 'chapters', 'public_distribution')},
+                           'is_detroit': is_detroit, 'is_demo': False})
+        result.sort(key=lambda story: not story['is_detroit'])
+        result.append({'id': 'demo', 'title': '雾港来信 · 开发演示', 'chapters': [chapter_info(d) for d in docs],
+                       'public_distribution': True, 'license': 'CC0-1.0', 'is_demo': True, 'is_detroit': False})
         return result
+
+    def default_story_id(self):
+        """Detroit is the product default. Missing content never starts the demo."""
+        return next((story['id'] for story in self.stories() if story.get('is_detroit')), None)
 
     def import_story(self, paths, title='本地故事'):
         if not isinstance(paths, list) or not 1 <= len(paths) <= 100:
@@ -177,15 +187,21 @@ class GameService:
         story_id = str(uuid.uuid4())
         directory = self.directory / 'stories' / story_id
         directory.mkdir()
+        compatibility_changes = []
+        from .detroit_compat import normalize_detroit_chapter, COMPATIBILITY_VERSION
         for i, doc in enumerate(docs):
+            doc, changes = normalize_detroit_chapter(doc)
+            compatibility_changes.extend(changes)
             write_json(directory / f'ch{i:03}.json', doc)
         manifest = {'id': story_id, 'title': title.strip(), 'chapters': [chapter_info(d) for d in docs],
                     'public_distribution': False, 'imported_at': now(),
                     'rights_status': 'Local user-supplied material; redistribution permission has not been established.'}
+        if compatibility_changes:
+            manifest['compatibility'] = {'version': COMPATIBILITY_VERSION, 'changes': compatibility_changes}
         write_json(directory / 'manifest.json', manifest)
         return {k: manifest[k] for k in ('id', 'title', 'chapters', 'public_distribution')}
 
-    def start(self, player_id, story_id='demo', chapter=1, mode='agent', core_text=None, difficulty='casual', play_style='self_aware', save_name=None):
+    def start(self, player_id, story_id=None, chapter=1, mode='agent', core_text=None, difficulty='casual', play_style='self_aware', save_name=None):
         if not isinstance(player_id, str) or not 1 <= len(player_id.strip()) <= 100:
             raise ValueError('INVALID_PLAYER_ID')
         if mode not in ('agent', 'independent', 'manual'):
@@ -201,10 +217,20 @@ class GameService:
             validate_core(core_text)
         elif core_text not in (None, ''):
             raise ValueError('CORE_ONLY_FOR_INDEPENDENT_SESSION')
+        if story_id in (None, '', 'detroit'):
+            story_id = self.default_story_id()
+            if story_id is None:
+                raise ValueError('DETROIT_NOT_INSTALLED')
         story = next((s for s in self.stories() if s['id'] == story_id), None)
         if story is None:
             raise ValueError('NO_STORY')
         source = PACKAGE / 'demo' if story_id == 'demo' else self.directory / 'stories' / story_id
+        if story.get('is_detroit'):
+            from .source import _check_local_files
+            manifest = read_json(source / 'manifest.json')
+            provenance = manifest.get('provenance', {})
+            if provenance.get('acquisition_complete') is True:
+                _check_local_files(source, provenance)
         paths = [p for p in sorted(source.glob('ch*.json')) if read_json(p)['chapter']['chapter_number'] >= chapter]
         if chapter not in [c['chapter_number'] for c in story['chapters']] or not paths:
             raise ValueError('NO_CHAPTER')
@@ -212,10 +238,20 @@ class GameService:
         directory = self.directory / 'sessions' / session_id
         (directory / 'story').mkdir(parents=True)
         pinned = []
+        snapshot_changes = []
+        from .detroit_compat import normalize_detroit_chapter, COMPATIBILITY_VERSION
         for path in paths:
             target = directory / 'story' / path.name
-            shutil.copyfile(path, target)
+            doc, changes = normalize_detroit_chapter(read_json(path))
+            if changes:
+                write_json(target, doc)
+                snapshot_changes.extend(changes)
+            else:
+                shutil.copyfile(path, target)
             pinned.append(target)
+        if snapshot_changes:
+            write_json(directory / 'story_compatibility.json', {
+                'version': COMPATIBILITY_VERSION, 'changes': snapshot_changes})
         if mode == 'independent':
             (directory / 'core.txt').write_text(core_text, encoding='utf-8')
         ContextStore(directory, play_style).start('player', pinned, difficulty)
@@ -224,7 +260,9 @@ class GameService:
             'story_title': story['title'], 'public_distribution': story['public_distribution'],
             'start_chapter': chapter, 'created_at': now(), 'difficulty': difficulty,
             'play_style': play_style, 'play_style_version': PROMPT_VERSION,
+            'recap_version': 1,
             'save_name': save_name, 'budget_family_id': session_id, 'inherited_choices': 0,
+            'snapshot_compatibility': {'version': COMPATIBILITY_VERSION, 'change_count': len(snapshot_changes)},
             'identity_notice': IDENTITY_NOTICE if mode == 'independent' else '原 Agent 或手动玩家作出选择；程序不创建替代玩家。',
             'prior_chapters': 'fresh initial state; earlier chapters were not played in this session' if chapter > 1 else None,
         })
@@ -349,7 +387,7 @@ class GameService:
             raise ValueError('INVALID_EXPORT_AUDIENCE')
         view = self.observe(session_id) if audience == 'observer' else self.view(session_id)
         if share and not view['public_distribution']:
-            raise ValueError('SHARE_REQUIRES_STORY_RIGHTS: local imported story is not cleared for redistribution')
+            return self._activity_share(view, format)
         data = {'schema': 'fish-story-experience/1', 'session_id': session_id,
                 'player_id': view['player_id'], 'mode': view['mode'], 'identity_notice': view['identity_notice'],
                 'play_style': view['play_style'], 'play_style_label': view['play_style_label'], 'audience': audience,
@@ -386,6 +424,14 @@ class GameService:
                             event.pop(key)
             data['current'] = None
             data['privacy']['redaction'] = 'identity, save paths, free-form explanations and correlation IDs removed; review required'
+        elif view.get('recap_version') == 1:
+            from .recaps import RecapStore
+            actor = None
+            if audience == 'player' and view.get('play_style') == 'immersive':
+                roles = view.get('perspective', {}).get('controlled_characters', [])
+                actor = roles[0] if len(roles) == 1 else None
+            data['player_authored_recaps'] = (RecapStore(self).entries(session_id, actor=actor)
+                if actor is not None or audience == 'observer' or view.get('play_style') != 'immersive' else [])
         if format == 'json':
             return data
         if format not in ('markdown', 'memory'):
@@ -424,7 +470,42 @@ class GameService:
                 lines.append('- 尚未完成章节；请以JSON记录中的outcome和已展示场景为依据，不推断结局。')
             lines.extend(['', '证据：结构化JSON内records保存每次实际选项、选择、可见结果、时间、稳定ID与hash。',
                           '请玩家审核这份候选摘要；程序不会改写核心资料或自动写入长期记忆。'])
+        if data.get('player_authored_recaps'):
+            latest = {entry['actor']: entry for entry in data['player_authored_recaps']}
+            lines.extend(['', '## 玩家自行维护的前情摘要', '',
+                          '以下文字由游玩者自行撰写，用于后续理解剧情；属于其整理与理解，不替代原始选择证据，也未自动成为长期记忆。', ''])
+            for actor, recap in latest.items():
+                lines.extend([f"### {actor} · 第 {recap['revision']} 版", '', recap['text'], ''])
         return '\n'.join(lines) + '\n'
+
+    @staticmethod
+    def _activity_share(view, format):
+        """A useful sharing candidate without redistributing imported story text."""
+        if format not in ('json', 'markdown', 'memory'):
+            raise ValueError('INVALID_EXPORT_FORMAT')
+        chapters = {}
+        for record in view['records']:
+            number = record['chapter'].get('chapter_number')
+            item = chapters.setdefault(number, {'chapter_number': number, 'choices': 0, 'inherited': 0})
+            item['choices'] += 1
+            item['inherited'] += int(bool(record.get('inherited')))
+        data = {'schema': 'fish-story-activity-share/1', 'share_scope': 'activity_counts_only',
+                'play_style': view['play_style'], 'status': view['status'],
+                'choice_count': len(view['records']), 'chapters': list(chapters.values()),
+                'privacy': {'review_required': True, 'contains_core': False,
+                            'contains_story_text': False, 'contains_identity': False,
+                            'contains_timestamps': False, 'automatically_published': False},
+                'notice': '游玩活动统计分享候选。已省略剧情、选项文字、结局、自由说明、身份、时间和存档定位。完整经历可在本地私人导出。'}
+        if format == 'json':
+            return data
+        lines = ['# 互动游戏 · 游玩活动分享候选', '', data['notice'], '',
+                 f"玩法：{view['play_style_label']} · 已记录选择 {data['choice_count']} 次", '',
+                 '| 章节 | 选择次数 | 其中继承旧选择 |', '| --- | ---: | ---: |']
+        for item in data['chapters']:
+            lines.append(f"| {item['chapter_number']} | {item['choices']} | {item['inherited']} |")
+        lines.extend(['', '这份统计尚未公开；请本人检查后决定是否分享。'
+                      '它不是经历摘要，也不自动成为长期记忆。', ''])
+        return '\n'.join(lines)
 
     def export_evidence(self, session_id, output_dir):
         """Small, local-only dots source adapter. Stable IDs/hashes; repeatable snapshots."""

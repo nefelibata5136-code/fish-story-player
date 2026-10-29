@@ -34,7 +34,7 @@ def synthetic(path):
 
 def test_demo_complete_results_and_reboot(tmp_path):
     service = GameService(tmp_path)
-    view = service.start('fish-A')
+    view = service.start('fish-A', story_id='demo')
     sid = view['session_id']
     view = play(service, view)
     assert view['status'] == 'complete'
@@ -61,7 +61,7 @@ def test_demo_complete_results_and_reboot(tmp_path):
 
 def test_invalid_duplicate_and_cross_player_isolation(tmp_path):
     service = GameService(tmp_path)
-    a, b = service.start('A'), service.start('B')
+    a, b = service.start('A', story_id='demo'), service.start('B', story_id='demo')
     sid, rid = a['session_id'], a['current']['request_id']
     db = service.session_dir(sid) / 'games.sqlite'
     before = db.read_bytes()
@@ -77,13 +77,13 @@ def test_invalid_duplicate_and_cross_player_isolation(tmp_path):
     with pytest.raises(ValueError, match='ANSWER_ALREADY_ACCEPTED'):
         service.choose(sid, rid, 2, '')
     assert service.view(b['session_id']) == b
-    c = service.start('A')
+    c = service.start('A', story_id='demo')
     assert c['session_id'] != sid and c['accepted_choices'] == 0
 
 
 def test_pause_resume_persist_and_original_receipt(tmp_path):
     s = GameService(tmp_path)
-    v = s.start('pause')
+    v = s.start('pause', story_id='demo')
     sid, c = v['session_id'], v['current']
     paused = s.pause(sid)
     assert GameService(tmp_path).view(sid)['status'] == 'paused'
@@ -131,7 +131,7 @@ def test_import_snapshot_and_tamper_refusal(tmp_path):
 
 def test_export_privacy_and_unknown_story_rights(tmp_path):
     s = GameService(tmp_path / 'home')
-    a = s.start('PRIVATE_PLAYER')
+    a = s.start('PRIVATE_PLAYER', story_id='demo')
     a = s.choose(a['session_id'], a['current']['request_id'], 1, 'PRIVATE_EXPLANATION')
     private = json.dumps(s.export(a['session_id']), ensure_ascii=False)
     assert 'PRIVATE_EXPLANATION' in private
@@ -140,8 +140,11 @@ def test_export_privacy_and_unknown_story_rights(tmp_path):
     assert str(s.directory) not in shared and a['session_id'] not in shared
     imported = s.import_story([str(synthetic(tmp_path / 'story.json'))], 'Private')
     b = s.start('B', imported['id'])
-    with pytest.raises(ValueError, match='SHARE_REQUIRES_STORY_RIGHTS'):
-        s.export(b['session_id'], share=True)
+    activity = s.export(b['session_id'], share=True)
+    assert activity['share_scope'] == 'activity_counts_only'
+    assert activity['privacy']['contains_story_text'] is False
+    assert b['session_id'] not in json.dumps(activity)
+    assert s.export(b['session_id'])['visible_history']
     for invalid in ('../secret', '..\\secret', None):
         with pytest.raises(ValueError, match='INVALID_SESSION_ID'):
             s.view(invalid)
@@ -149,7 +152,7 @@ def test_export_privacy_and_unknown_story_rights(tmp_path):
 
 def test_lock_and_evidence_export_idempotency(tmp_path):
     s = GameService(tmp_path / 'home')
-    v = s.start('A')
+    v = s.start('A', story_id='demo')
     sid = v['session_id']
     with s._store(sid).connect() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -171,7 +174,7 @@ def test_lock_and_evidence_export_idempotency(tmp_path):
 
 def test_start_chapter_does_not_invent_prior_choices(tmp_path):
     s = GameService(tmp_path)
-    v = s.start('A', chapter=2)
+    v = s.start('A', story_id='demo', chapter=2)
     assert v['accepted_choices'] == 0
     assert 'fresh initial state' in v['prior_chapters']
     assert '没有继承此前的选择' in v['current']['context']

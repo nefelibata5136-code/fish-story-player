@@ -1,5 +1,8 @@
 # Acceptance — 2026-10-29
 
+> Historical engine acceptance. Current Detroit product and portable Windows evidence: [PRODUCT_ACCEPTANCE.md](PRODUCT_ACCEPTANCE.md).
+
+
 The v0.3.0 multiple-save update has **92 passing free tests** and separate save,
 branch, browser and shared-budget evidence in [SAVE_ACCEPTANCE.md](SAVE_ACCEPTANCE.md).
 

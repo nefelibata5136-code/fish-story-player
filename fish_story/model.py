@@ -114,6 +114,16 @@ def _config(config):
     return normalized
 
 
+RECAP_PROTOCOL = (
+    'Local recap protocol (fixed for this saved game): ordinary scene requests use the choice JSON above. '
+    'When the current request has action=update_own_local_recap, it is a separate writing task: '
+    'return only JSON {"recap": "your own updated local recap", "max_characters": optional positive integer}. '
+    'Write as the same player, distinguishing fictional events from your actual choices, and use only '
+    'your permitted already witnessed history. Do not choose or invent a subsequent scene. '
+    'You may adjust the local recap length limit.'
+)
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -155,6 +165,11 @@ class IndependentPlayer:
         self._style_prompt = (style_instructions(self.play_style)
                               if self.play_style != 'legacy_unspecified' else '')
         self.family_id = initial.get('budget_family_id', session_id)
+        self.recap_enabled = initial.get('recap_version') == 1
+        self.recaps = None
+        if self.recap_enabled:
+            from .recaps import RecapStore
+            self.recaps = RecapStore(service)
         self.db_path = ledger_directory(service, session_id) / 'model.sqlite'
         with self._db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, config TEXT NOT NULL, core_hash TEXT NOT NULL)')
@@ -170,6 +185,10 @@ class IndependentPlayer:
                 db.execute('ALTER TABLE calls ADD COLUMN session_id TEXT')
                 # Existing calls belong to the original family/root session.
                 db.execute('UPDATE calls SET session_id=? WHERE session_id IS NULL', (self.family_id,))
+            if 'kind' not in columns:
+                db.execute("ALTER TABLE calls ADD COLUMN kind TEXT NOT NULL DEFAULT 'choice'")
+            if 'task_id' not in columns:
+                db.execute('ALTER TABLE calls ADD COLUMN task_id TEXT')
             existing = db.execute('SELECT config,core_hash FROM settings WHERE id=1').fetchone()
             # Budget/rate/model changes require a new independent session. Restarting
             # the process cannot silently reset accounting or reinterpret old costs.
@@ -181,6 +200,8 @@ class IndependentPlayer:
             identity = (self.core if self.play_style == 'legacy_unspecified' else
                         _dump({'core': self.core, 'play_style': self.play_style,
                                'instructions': self._style_prompt, 'prompt_version': PROMPT_VERSION}))
+            if self.recap_enabled:
+                identity = _dump({'identity': identity, 'recap_version': 1, 'recap_protocol': RECAP_PROTOCOL})
             core_hash = hashlib.sha256(identity.encode('utf-8')).hexdigest()
             if existing and existing != (_dump(pinned), core_hash):
                 raise ValueError('MODEL_CONFIG_OR_CORE_CHANGED: create a new session; old ledger is preserved')
@@ -201,8 +222,8 @@ class IndependentPlayer:
 
     def status(self):
         with self._db() as db:
-            rows = db.execute('SELECT id,request_id,status,created_at,updated_at,charged_tokens,charged_cost,usage,error,session_id FROM calls ORDER BY rowid').fetchall()
-        calls = [dict(zip(('id', 'request_id', 'status', 'created_at', 'updated_at', 'charged_tokens', 'charged_cost', 'usage', 'error', 'session_id'), row)) for row in rows]
+            rows = db.execute('SELECT id,request_id,status,created_at,updated_at,charged_tokens,charged_cost,usage,error,session_id,kind,task_id FROM calls ORDER BY rowid').fetchall()
+        calls = [dict(zip(('id', 'request_id', 'status', 'created_at', 'updated_at', 'charged_tokens', 'charged_cost', 'usage', 'error', 'session_id', 'kind', 'task_id'), row)) for row in rows]
         for item in calls:
             item['usage'] = json.loads(item['usage']) if item['usage'] else None
         return {
@@ -237,6 +258,8 @@ class IndependentPlayer:
         system = SYSTEM + self.core
         if self.play_style != 'legacy_unspecified':
             system += '\n\nDecision style (fixed for this saved game):\n' + self._style_prompt
+        if self.recap_enabled:
+            system += '\n\n' + RECAP_PROTOCOL
         messages = [{'role': 'system', 'content': system}]
         actor = None
         if self.play_style == 'immersive':
@@ -251,7 +274,13 @@ class IndependentPlayer:
                 'scope': 'Only this character\'s already visible game information follows. '
                          'The player identity remains separate from the fictional character.'})})
         last_scene, last_options = None, []
-        for event in view.get('history', []):
+        exchanges = self._recap_exchanges(actor or 'player') if self.recap_enabled else []
+        exchange_index = 0
+        history = view.get('history', [])
+        for event_index, event in enumerate(history):
+            while exchange_index < len(exchanges) and exchanges[exchange_index][0] <= event_index:
+                messages.extend(exchanges[exchange_index][1])
+                exchange_index += 1
             if actor is not None and event.get('controlled_characters') != [actor]:
                 raise ValueError('ROLE_PERSPECTIVE_UNAVAILABLE')
             kind = event.get('type')
@@ -269,6 +298,9 @@ class IndependentPlayer:
             elif kind == 'chapter_end':
                 ending = event.get('ending', {})
                 messages.append({'role': 'user', 'content': _dump({'fictional_result': {'title': ending.get('title'), 'narrative': ending.get('narrative')}})})
+        while exchange_index < len(exchanges) and exchanges[exchange_index][0] <= len(history):
+            messages.extend(exchanges[exchange_index][1])
+            exchange_index += 1
         current = view.get('current')
         if current:
             if actor is not None and current.get('controlled_characters') != [actor]:
@@ -278,11 +310,45 @@ class IndependentPlayer:
                 messages.append({'role': 'user', 'content': _dump(scene)})
         return messages
 
+    def _pending_recaps(self):
+        return self.recaps.tasks(self.session_id) if self.recap_enabled else []
+
+    def _recap_exchanges(self, actor):
+        """Insert immutable authored exchanges at their actual history boundary."""
+        entries = self.recaps.entries(self.session_id, actor=actor)
+        with self._db() as db:
+            saved = {row[0]: json.loads(row[1]) for row in db.execute(
+                "SELECT id,result FROM calls WHERE kind='recap' AND result IS NOT NULL AND status IN ('ready','applied')")}
+        result = []
+        for entry in entries:
+            boundary = entry.get('visible_history_count')
+            if boundary is None:
+                boundary = len(self.recaps.task_view(self.session_id, entry['task_id']).get('history', []))
+            original = saved.get(entry.get('operation_id'))
+            if original is not None and any((original.get('actor') != actor,
+                                             original.get('recap') != entry['text'],
+                                             original.get('max_characters') != entry['max_characters'],
+                                             original.get('task_id') != entry.get('task_id'))):
+                original = None
+            if original is not None:
+                pair = [{'role': 'user', 'content': original['request_message']},
+                        {'role': 'assistant', 'content': _dump(original['response'])}]
+            else:
+                pair = [{'role': 'user', 'content': _dump({
+                    'action': 'player_authored_local_recap', 'revision': entry.get('revision'),
+                    'scope': 'An actual local recap authored by this player; not new fictional events.'})},
+                        {'role': 'assistant', 'content': _dump({
+                            'recap': entry['text'], 'max_characters': entry['max_characters']})}]
+            result.append((boundary, pair))
+        return sorted(result, key=lambda item: item[0])
+
     def _check_style(self, view):
         if view.get('play_style', 'legacy_unspecified') != self.play_style:
             raise ValueError('MODEL_CONFIG_OR_CORE_CHANGED: saved play style changed')
+        if (view.get('recap_version') == 1) != self.recap_enabled:
+            raise ValueError('MODEL_CONFIG_OR_CORE_CHANGED: saved recap protocol changed')
 
-    def _reserve(self, request_id, messages):
+    def _reserve(self, request_id, messages, kind='choice', task_id=None):
         # Byte-length plus generous per-message overhead is a conservative bound
         # for ordinary byte-based tokenizers. Usage beyond it stops the session.
         prompt_bound = len(_dump(messages).encode('utf-8')) + 1024 + 128 * len(messages)
@@ -303,9 +369,9 @@ class IndependentPlayer:
             call_id = str(uuid.uuid4())
             timestamp = now()
             db.execute('''INSERT INTO calls (id,request_id,status,created_at,updated_at,reserved_tokens,reserved_cost,
-                       charged_tokens,charged_cost,prompt_bound,result,usage,error,session_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                       (call_id, request_id, 'reserved', timestamp, timestamp, tokens, cost, tokens, cost, prompt_bound, None, None, None, self.session_id))
+                       charged_tokens,charged_cost,prompt_bound,result,usage,error,session_id,kind,task_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                       (call_id, request_id, 'reserved', timestamp, timestamp, tokens, cost, tokens, cost, prompt_bound, None, None, None, self.session_id, kind, task_id))
         return call_id, prompt_bound
 
     def _update(self, call_id, **fields):
@@ -318,15 +384,24 @@ class IndependentPlayer:
 
     def _finish_ready(self):
         with self._db() as db:
-            row = db.execute("SELECT id,request_id,result FROM calls WHERE status='ready' AND session_id=? ORDER BY rowid LIMIT 1", (self.session_id,)).fetchone()
+            row = db.execute("SELECT id,request_id,result,kind FROM calls WHERE status='ready' AND session_id=? ORDER BY rowid LIMIT 1", (self.session_id,)).fetchone()
         if not row:
             return None
         result = json.loads(row[2])
         # The game implements idempotent request receipts. A crash between game
         # commit and this update resumes from the saved answer without a new API call.
-        view = self.service.choose(self.session_id, row[1], result['choice'], result['public_reason'])
+        recap = row[3] == 'recap'
+        if recap:
+            if not self.recap_enabled:
+                raise ValueError('MODEL_CONFIG_OR_CORE_CHANGED')
+            self.recaps.update(self.session_id, result['recap'], task_id=result['task_id'],
+                               max_characters=result['max_characters'], operation_id=row[0])
+            view = self.service.view(self.session_id)
+        else:
+            view = self.service.choose(self.session_id, row[1], result['choice'], result['public_reason'])
         self._update(row[0], status='applied')
-        return {'status': 'applied', 'call_id': row[0], 'view': view, 'budget': self.status()}
+        return {'status': 'applied', 'call_id': row[0], 'recap_updated': recap,
+                'recap_pending': bool(self._pending_recaps()), 'view': view, 'budget': self.status()}
 
     def step(self):
         view = self.service.view(self.session_id)
@@ -334,13 +409,37 @@ class IndependentPlayer:
         ready = self._finish_ready()
         if ready is not None:
             return ready
-        if view.get('status') != 'waiting' or not view.get('current'):
-            return {'status': view.get('status'), 'view': view, 'budget': self.status()}
+        tasks = self._pending_recaps()
+        if view.get('status') == 'paused' or (not tasks and (view.get('status') != 'waiting' or not view.get('current'))):
+            return {'status': view.get('status'), 'view': view, 'recap_pending': bool(tasks), 'budget': self.status()}
         api_key = os.environ.get(self.config['api_key_env'])
         if not api_key:
             raise ValueError('MODEL_API_KEY_MISSING: set the configured environment variable')
-        messages = self.messages(view)
-        call_id, prompt_bound = self._reserve(view['current']['request_id'], messages)
+        task = tasks[0] if tasks else None
+        if task:
+            task_view = self.recaps.task_view(self.session_id, task['task_id'])
+            messages = self.messages(task_view)
+            previous = self.recaps.read(self.session_id, actor=task['actor'])
+            recap_limit = previous['max_characters']
+            request_message = _dump({'action': 'update_own_local_recap',
+                'task_id': task['task_id'], 'chapter_number': task['chapter_number'],
+                'max_characters': recap_limit,
+                'instructions': ('Update your own running local recap after this completed chapter. '
+                                 'Use only the permitted completed history above; no upcoming scene is supplied. '
+                                 'Return JSON with recap text and optional max_characters. '
+                                 'The default local limit is 5000 characters; you may adjust it. '
+                                 'Do not provide a game choice or private reasoning.')})
+            messages.append({'role': 'user', 'content': request_message})
+            # Task IDs intentionally survive branching for inherited recaps.
+            # A branch made before a recap must still author its own result;
+            # another branch's applied call cannot mark this request stale.
+            request_id = 'recap:' + self.session_id + ':' + task['task_id']
+        else:
+            messages = self.messages(view)
+            request_id = view['current']['request_id']
+        call_id, prompt_bound = self._reserve(request_id, messages,
+                                               kind='recap' if task else 'choice',
+                                               task_id=task['task_id'] if task else None)
         body = {'model': self.config['model'], 'messages': messages, 'max_tokens': self.config['max_output_tokens'], 'stream': False}
         if 'thinking' in self.config:
             body['thinking'] = {'type': self.config['thinking']}
@@ -384,21 +483,42 @@ class IndependentPlayer:
         try:
             response_message = payload['choices'][0]['message']
             answer = json.loads(response_message['content'])
-            choice = answer['choice']
-            reason = answer.get('public_reason', '')
-            numbers = [item.get('number', n) for n, item in enumerate(view['current']['choices'], 1)]
-            if type(choice) is not int or choice not in numbers or not isinstance(reason, str) or len(reason) > 2000:
-                raise ValueError('INVALID_MODEL_CHOICE')
-        except (ValueError, TypeError, KeyError, IndexError):
-            self._update(call_id, status='rejected', error='INVALID_MODEL_CHOICE')
-            raise ValueError('INVALID_MODEL_CHOICE: game unchanged; call accounted') from None
-        result = {'choice': choice, 'public_reason': reason}
+            if task:
+                text = answer['recap']
+                limit = answer.get('max_characters', recap_limit)
+                if (not isinstance(text, str) or not text.strip() or '\x00' in text
+                        or type(limit) is not int or not 1 <= limit <= 1_000_000):
+                    raise ValueError('INVALID_MODEL_RECAP')
+                text.encode('utf-8')
+                if len(text) > limit:
+                    raise ValueError('RECAP_TOO_LONG')
+                response = {'recap': text}
+                if 'max_characters' in answer:
+                    response['max_characters'] = limit
+                result = {'kind': 'recap', 'task_id': task['task_id'], 'actor': task['actor'],
+                          'recap': text, 'max_characters': limit,
+                          'request_message': request_message, 'response': response}
+            else:
+                result = self._choice_result(answer, view)
+        except (ValueError, TypeError, KeyError, IndexError) as error:
+            code = 'RECAP_TOO_LONG' if task and str(error) == 'RECAP_TOO_LONG' else 'INVALID_MODEL_RECAP' if task else 'INVALID_MODEL_CHOICE'
+            self._update(call_id, status='rejected', error=code)
+            raise ValueError(code + ': game unchanged; call accounted') from None
         self._update(call_id, status='ready', result=_dump(result))
         return self._finish_ready()
+
+    @staticmethod
+    def _choice_result(answer, view):
+        choice = answer['choice']
+        reason = answer.get('public_reason', '')
+        numbers = [item.get('number', n) for n, item in enumerate(view['current']['choices'], 1)]
+        if type(choice) is not int or choice not in numbers or not isinstance(reason, str) or len(reason) > 2000:
+            raise ValueError('INVALID_MODEL_CHOICE')
+        return {'choice': choice, 'public_reason': reason}
 
     def run(self):
         """Advance until complete/paused/error; every attempted call is durably bounded."""
         while True:
             result = self.step()
-            if result['status'] != 'applied' or result['view'].get('status') != 'waiting':
+            if result['status'] != 'applied' or (result['view'].get('status') != 'waiting' and not result.get('recap_pending')):
                 return result

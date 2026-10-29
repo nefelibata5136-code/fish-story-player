@@ -51,6 +51,8 @@ Authoritative upstream scope:
 
 Neither upstream license grants the original game's story, character, setting, trademark or asset rights. The upstream author's claim that its chapters are paraphrases is not a verified chain of permission from the original game's rights holders.
 
+Since v0.4 an explicit user-requested acquisition command can fetch the pinned source directly from upstream GitHub into the user's private local storage. CC BY-NC does not prohibit such downloads. No downloaded chapters or upstream data are mirrored in our repository or release artifacts. Local acquisition retains attribution, license materials, source commit, checksums and import-modification notes. This capability does not grant or claim original-game authorization.
+
 ## Detroit: Become Human — no bundled game content
 
 *Detroit: Become Human* is a work developed by Quantic Dream. Its official game page states copyright and trademark ownership by Sony Interactive Entertainment Europe and reserves the relevant rights. This project is not affiliated with or endorsed by those parties, and has no verified authorization to redistribute the original game's story materials.
@@ -69,7 +71,7 @@ Full terms: [Creative Commons CC0 1.0 Universal](https://creativecommons.org/pub
 
 ## Runtime dependencies
 
-Dependencies are installed through the package manager rather than copied into this repository. The main package and retained upstream command-line convenience code use the following packages:
+Source installations use the package manager. The Windows portable edition bundles a Python runtime and dependencies, with their notices in `THIRD_PARTY_LICENSES`, including the Python incorporated-software license appendix and PyInstaller bootloader exception. The main package and retained upstream command-line convenience code use the following packages:
 
 | Package | License | Upstream |
 | --- | --- | --- |

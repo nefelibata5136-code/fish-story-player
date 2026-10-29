@@ -17,7 +17,7 @@ from test_styles import chapter, imported
 @pytest.fixture
 def model_game(tmp_path):
     service = GameService(tmp_path / 'data')
-    source = service.start('fish', mode='independent', core_text='Generic player core.', save_name='Original')
+    source = service.start('fish', story_id='demo', mode='independent', core_text='Generic player core.', save_name='Original')
     provider = Provider()
     config = {'base_url': provider.base, 'model': 'fake', 'api_key_env': 'FISH_BRANCH_TEST_KEY',
               'max_calls': 2, 'token_budget': 100000, 'max_cost': 1,
@@ -98,7 +98,7 @@ def test_budget_family_missing_or_foreign_root_is_rejected(model_game):
     branch = service.load_save_point(sid, 'auto:0', operation_id='family-protection')
     path = service.session_dir(branch['session_id']) / 'session.json'
     meta = json.loads(path.read_text(encoding='utf-8'))
-    foreign = service.start('another-player')
+    foreign = service.start('another-player', story_id='demo')
     changed = {**meta, 'budget_family_id': foreign['session_id']}
     path.write_text(json.dumps(changed), encoding='utf-8')
     with pytest.raises(ValueError, match='BUDGET_FAMILY_NOT_OWNED'):
@@ -141,7 +141,7 @@ def test_old_ledger_migration_preserves_usage_and_routes_existing_calls(model_ga
 
 def test_inherited_choices_are_references_not_new_dots_events(tmp_path):
     service = GameService(tmp_path / 'data')
-    v = service.start('fish', save_name='PRIVATE_ROOT_NAME')
+    v = service.start('fish', story_id='demo', save_name='PRIVATE_ROOT_NAME')
     sid = v['session_id']
     v = service.choose(sid, v['current']['request_id'], 1, 'Original explanation')
     branch = service.load_save_point(sid, 'auto:1', 'PRIVATE_BRANCH_NAME', 'lineage')
@@ -176,7 +176,7 @@ def test_same_fork_operation_can_reconcile_after_source_role_changes(tmp_path):
 
 def test_save_current_operation_freezes_first_progress_on_retry(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     point = service.save_point(source['session_id'], 'Initial point', operation_id='same-point')
     service.choose(source['session_id'], source['current']['request_id'], 1)
     assert service.save_point(source['session_id'], 'Initial point', operation_id='same-point') == point

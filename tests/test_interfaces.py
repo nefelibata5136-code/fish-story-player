@@ -206,6 +206,7 @@ def test_official_mcp_tools_bind_player_and_never_call_model(tmp_path):
                 'game_saves', 'game_open', 'game_save_points', 'game_save_checkpoint', 'game_load_checkpoint', 'game_rename_save'} <= names
         start_schema = next(tool.inputSchema for tool in tools if tool.name == 'game_start')
         assert start_schema['properties']['play_style']['default'] == 'self_aware'
+        assert start_schema['properties']['story_id']['default'] == 'detroit'
         result = await server.call_tool('game_view', {'session_id': 'one'})
         assert 'Visible scene' in str(result)
         service.observe = lambda sid: (_ for _ in ()).throw(RuntimeError('OBSERVER_MUST_NOT_BE_USED_BY_MCP'))
@@ -254,7 +255,7 @@ def test_official_stdio_subprocess_full_agent_flow(tmp_path):
     from fish_story.service import GameService
 
     service = GameService(tmp_path / 'private-home')
-    foreign = service.start('another-player')
+    foreign = service.start('another-player', story_id='demo')
     # No API credential is needed or inherited by the direct-play server process.
     env = {k: v for k, v in os.environ.items()
            if k.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'}}
@@ -275,7 +276,7 @@ def test_official_stdio_subprocess_full_agent_flow(tmp_path):
                 await session.initialize()
                 tools = await session.list_tools()
                 assert 'game_choose' in {tool.name for tool in tools.tools}
-                started = data(await session.call_tool('game_start', {'play_style': 'immersive', 'save_name': '第一条路线'}))
+                started = data(await session.call_tool('game_start', {'story_id': 'demo', 'play_style': 'immersive', 'save_name': '第一条路线'}))
                 sid = started['session_id']
                 assert started['play_style'] == 'immersive'
                 assert service._meta(sid)['play_style'] == 'immersive'

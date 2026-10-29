@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fish-story-player"
-version = "0.3.0"
+version = "0.4.1"
 description = "Bring your own Agent or identity to an interactive story; keep the experience locally."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dev = ["pytest>=8,<10", "build>=1,<2"]
 
 [project.scripts]
 fish-story = "fish_story.cli:main"
+fish-story-desktop = "fish_story.desktop:main"
 
 [tool.setuptools.packages.find]
 include = ["fish_story*"]

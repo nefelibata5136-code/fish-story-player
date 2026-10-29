@@ -154,9 +154,14 @@ class ModelTests(unittest.TestCase):
     def test_actual_game_service_full_demo_and_restart(self):
         from fish_story.service import GameService
         service = GameService(Path(self.temp.name) / 'actual-game')
-        view = service.start('test-player', mode='independent', core_text='An original player, separate from story roles.')
+        view = service.start('test-player', story_id='demo', mode='independent', core_text='An original player, separate from story roles.')
         config = {**self.config, 'max_calls': 20, 'token_budget': 500000}
         session_id = view['session_id']
+        # Legacy sessions keep exactly the original choice-only wire.
+        meta_path = service.session_dir(session_id) / 'session.json'
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        meta.pop('recap_version', None)
+        meta_path.write_text(json.dumps(meta), encoding='utf-8')
         first = IndependentPlayer(service, session_id, config).step()
         self.assertEqual(first['status'], 'applied')
         final = IndependentPlayer(GameService(service.directory), session_id, config).run()

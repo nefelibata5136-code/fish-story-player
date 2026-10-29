@@ -82,6 +82,9 @@ class SaveManager:
                     'core_hex': core.read_bytes().hex() if core.exists() else None,
                     'source_session_id': session_id, 'choice_count': count,
                     'captured_at': now()}
+        if snapshot['meta'].get('recap_version') == 1 or (directory / 'recaps.sqlite').is_file():
+            from .recaps import RecapStore
+            snapshot['recaps'] = RecapStore(self.service).snapshot(session_id, count)
         return snapshot, projection
 
     @staticmethod
@@ -376,6 +379,9 @@ class SaveManager:
                     save_family_id=source_meta.get('save_family_id', source_id),
                     fork_operation_id=operation_id)
         write_json(stage / 'session.json', meta)
+        if snapshot.get('recaps') is not None:
+            from .recaps import RecapStore
+            RecapStore.restore(stage, snapshot['recaps'])
         # Publish a fully closed SQLite database and metadata atomically. Partial
         # staging directories are left private for inspection, never force-deleted.
         os.replace(stage, target)

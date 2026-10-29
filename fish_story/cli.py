@@ -17,11 +17,27 @@ def default_home():
 def parser():
     p = argparse.ArgumentParser(description='Let your fish bring their identity into an interactive story.')
     p.add_argument('--home', type=Path, default=default_home(), help='Private local saves directory')
+    p.add_argument('--compact', action='store_true', help='Return current scene/receipt only; complete history remains in local export')
     sub = p.add_subparsers(dest='command', required=True)
     srv = sub.add_parser('serve'); srv.add_argument('--port', type=int, help='Default 8765, or a free port if busy'); srv.add_argument('--open', action='store_true')
     sub.add_parser('stories'); sub.add_parser('sessions')
     imp = sub.add_parser('import-story'); imp.add_argument('paths', nargs='+'); imp.add_argument('--title', default='Local story')
-    new = sub.add_parser('new'); new.add_argument('--player', required=True); new.add_argument('--story', default='demo')
+    pack = sub.add_parser('import-pack', help='Import an entire local repository/chapter ZIP in one operation')
+    pack.add_argument('archive', type=Path); pack.add_argument('--title', default='本地故事'); pack.add_argument('--language', choices=['zh', 'en'], default='zh')
+    sub.add_parser('story-source', help='Show the fixed upstream source and its noncommercial terms; no download')
+    for command in ('setup-detroit', 'play-detroit'):
+        setup = sub.add_parser(command, help='Explicitly fetch the fixed upstream story into local private storage')
+        setup.add_argument('--accept-source-terms', action='store_true', help='Request the third-party CC BY-NC story; no original-game rights are granted')
+        if command == 'play-detroit':
+            setup.add_argument('--player', required=True); setup.add_argument('--save-name')
+            setup.add_argument('--play-style', choices=['immersive', 'self_aware'], default='self_aware')
+    connection = sub.add_parser('agent-config', help='Generate MCP JSON and native DSH configuration with real absolute paths')
+    connection.add_argument('--player', required=True)
+    connection.add_argument('--play-style', choices=['immersive', 'self_aware'], default='self_aware')
+    connection.add_argument('--session-id')
+    connection.add_argument('--format', choices=['json', 'mcp', 'dsh', 'instructions'], default='json')
+    connection.add_argument('--output', type=Path)
+    new = sub.add_parser('new'); new.add_argument('--player', required=True); new.add_argument('--story', default='detroit')
     new.add_argument('--save-name', help='Optional local display name; never used as a path')
     new.add_argument('--chapter', type=int, default=1); new.add_argument('--mode', choices=['agent', 'independent', 'manual'], default='agent')
     new.add_argument('--play-style', choices=['immersive', 'self_aware'], default='self_aware',
@@ -31,6 +47,13 @@ def parser():
         x = sub.add_parser(name); x.add_argument('session_id')
     choose = sub.add_parser('choose'); choose.add_argument('session_id'); choose.add_argument('request_id')
     choose.add_argument('choice', type=int); choose.add_argument('--reason', default='')
+    recap = sub.add_parser('recap-read', help='Read your recap file and paginated completed-chapter evidence')
+    recap.add_argument('session_id'); recap.add_argument('--task-id')
+    recap.add_argument('--offset', type=int, default=0); recap.add_argument('--limit', type=int, default=20)
+    recap_update = sub.add_parser('recap-update', help='Save the recap authored by the player, not an automatic synopsis')
+    recap_update.add_argument('session_id'); recap_update.add_argument('--task-id')
+    recap_update.add_argument('--text-file', type=Path, required=True)
+    recap_update.add_argument('--max-characters', type=int); recap_update.add_argument('--operation-id')
     points = sub.add_parser('save-points'); points.add_argument('session_id'); points.add_argument('--observer', action='store_true')
     point = sub.add_parser('save-point'); point.add_argument('session_id'); point.add_argument('--name', required=True)
     point.add_argument('--choice-count', type=int); point.add_argument('--operation-id'); point.add_argument('--observer', action='store_true')
@@ -82,8 +105,34 @@ def main(argv=None):
             from .mcp_server import run
             run(service, args.player)
             return 0
-        if args.command == 'stories': result = service.stories()
+        if args.command == 'agent-config':
+            from .agent_setup import connection_info
+            result = connection_info(service, args.player, args.play_style, args.session_id)
+            if args.format == 'mcp': result = result['mcp_config']
+            elif args.format == 'dsh': result = result['dsh_config_yaml']
+            elif args.format == 'instructions': result = result['agent_instructions']
+            if args.output:
+                content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                # Never overwrite an existing Agent configuration implicitly.
+                with args.output.open('x', encoding='utf-8') as handle:
+                    handle.write(content)
+                print(str(args.output.resolve()))
+                return 0
+        elif args.command == 'stories': result = service.stories()
         elif args.command == 'sessions': result = service.sessions()
+        elif args.command == 'story-source':
+            from .source import source_info
+            result = source_info()
+        elif args.command in ('setup-detroit', 'play-detroit'):
+            from .source import acquire_detroit
+            result = acquire_detroit(service, accepted=args.accept_source_terms)
+            if args.command == 'play-detroit':
+                result = service.start(player_id=args.player, story_id=result['id'], mode='agent',
+                                       play_style=args.play_style, save_name=args.save_name)
+        elif args.command == 'import-pack':
+            from .import_pack import import_story_pack
+            result = import_story_pack(service, args.archive, title=args.title, language=args.language)
         elif args.command == 'import-story':
             paths = []
             for value in args.paths:
@@ -97,7 +146,21 @@ def main(argv=None):
                                    mode=args.mode, core_text=args.core.read_text(encoding='utf-8-sig') if args.core else None,
                                    difficulty=args.difficulty, play_style=args.play_style, save_name=args.save_name)
         elif args.command in ('view', 'pause', 'resume'): result = getattr(service, args.command)(args.session_id)
-        elif args.command == 'choose': result = service.choose(args.session_id, args.request_id, args.choice, args.reason)
+        elif args.command == 'choose':
+            current = service.view(args.session_id)
+            if service._meta(args.session_id).get('mode') == 'agent' and args.request_id == (current.get('current') or {}).get('request_id'):
+                from .recaps import RecapStore
+                if RecapStore(service).tasks(args.session_id):
+                    raise ValueError('RECAP_UPDATE_REQUIRED')
+            result = service.choose(args.session_id, args.request_id, args.choice, args.reason)
+        elif args.command == 'recap-read':
+            from .player_output import recap_read
+            result = recap_read(service, args.session_id, args.task_id, args.offset, args.limit)
+        elif args.command == 'recap-update':
+            from .recaps import RecapStore
+            result = RecapStore(service).update(args.session_id, args.text_file.read_text(encoding='utf-8-sig'),
+                                               task_id=args.task_id, max_characters=args.max_characters,
+                                               operation_id=args.operation_id)
         elif args.command == 'save-points': result = service.save_points(args.session_id, audience='observer' if args.observer else 'player')
         elif args.command == 'save-point':
             result = service.save_point(args.session_id, args.name, choice_count=args.choice_count, operation_id=args.operation_id,
@@ -119,6 +182,10 @@ def main(argv=None):
             methods = {'model-step': 'step', 'model-run': 'run', 'model-status': 'status'}
             result = player.acknowledge_unknown(args.call_id) if args.command == 'model-ack' else getattr(player, methods[args.command])()
         elif args.command == 'export':
+            if not args.observer and service._meta(args.session_id).get('mode') == 'agent':
+                from .recaps import RecapStore
+                if RecapStore(service).tasks(args.session_id):
+                    raise ValueError('RECAP_UPDATE_REQUIRED')
             result = service.export(args.session_id, format=args.format, share=args.share,
                                     audience='observer' if args.observer else 'player')
             if args.output:
@@ -127,6 +194,14 @@ def main(argv=None):
                 args.output.write_text(content, encoding='utf-8')
                 print(str(args.output.resolve()))
                 return 0
+        if (args.command in ('new', 'play-detroit', 'view', 'choose', 'pause', 'resume', 'load-point', 'rename-save')
+                and isinstance(result, dict) and 'status' in result and 'session_id' in result):
+            from .player_output import agent_view
+            meta = service._meta(result['session_id'])
+            if args.compact or meta.get('mode') == 'agent':
+                result = agent_view(service, result, request_id=args.request_id if args.command == 'choose' else None,
+                                    choice=args.choice if args.command == 'choose' else None,
+                                    include_recap=args.command in ('view', 'new', 'play-detroit'))
         print(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except KeyboardInterrupt:

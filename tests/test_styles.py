@@ -122,7 +122,7 @@ def test_explicit_node_and_ending_metadata(tmp_path):
 
 def test_v010_legacy_save_preserves_fingerprint_and_receipts(tmp_path):
     service = GameService(tmp_path / 'home')
-    view = service.start('legacy-setup')
+    view = service.start('legacy-setup', story_id='demo')
     directory = service.session_dir(view['session_id'])
     meta = json.loads((directory / 'session.json').read_text(encoding='utf-8'))
     meta.pop('play_style'); meta.pop('play_style_version')
@@ -139,7 +139,7 @@ def test_v010_legacy_save_preserves_fingerprint_and_receipts(tmp_path):
 def test_invalid_style_does_not_create_session(tmp_path):
     service = GameService(tmp_path)
     with pytest.raises(ValueError, match='INVALID_PLAY_STYLE'):
-        service.start('fish', play_style='become-character-forever')
+        service.start('fish', story_id='demo', play_style='become-character-forever')
     assert not service.sessions()
 
 

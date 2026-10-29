@@ -14,10 +14,46 @@ discover, inspect, change and cheaply test its own installed copy.
 | MCP ownership, safe errors, CLI and loopback console | `fish_story/{mcp_server,cli,server}.py`, `tests/test_interfaces.py` |
 | Screen layout and all visible interactions | `fish_story/web/index.html` |
 | Publication allowlist and heuristic scan | `scripts/release_check.py` |
+| Explicit pinned source acquisition, local attribution and checksum | `fish_story/source.py`, `tests/test_source.py` |
+| Safe whole-ZIP import | `fish_story/import_pack.py`, `tests/test_import_pack.py` |
+| Double-click Windows runtime and frozen CLI/MCP | `fish_story/desktop.py`, `scripts/build_windows.py`, `scripts/check_windows_bundle.py` |
+| Default Detroit selection and source integrity at new start | `fish_story/service.py`, `tests/test_source.py`, `tests/test_product_entry.py` |
+| Generated MCP / DSH connection with bound player and existing save | `fish_story/agent_setup.py`, `tests/test_agent_setup.py` |
+| Bounded current-step responses / paginated role history | `fish_story/player_output.py`, `fish_story/mcp_server.py`, `tests/test_player_output.py` |
+| Hash-bound role / terminal-route compatibility adjustments | `fish_story/detroit_compat.py`, `tests/test_detroit_compat.py`, `scripts/audit_story_campaign.py` |
+| Explicit finite independent-game capacity and cost planning | `fish_story/planning.py`, `tests/test_product_entry.py` |
 
 Installed entry points: `fish-story --help`; `fish-story stories`; MCP `story_list`.
 All models are optional in Agent mode; no native life Host or private profile is
 required. Behavior changes can be developed in a normal clone of this repository.
+
+`agent-config --player my-fish` generates local absolute paths. `--format dsh`
+emits an official DSH MCP plugin entry without changing the installed DSH.
+`--session-id` binds the generated instructions to an existing owned save.
+For CLI Agents, global `--compact` avoids repeating all previous history.
+MCP step responses are compact by default; `game_history(offset, limit)` returns
+at most 50 events and 50 records per page with an explicit `next_offset`.
+The full private Web observation and exports retain the original evidence.
+
+Compatibility adjustments apply only to matching pinned chapter hashes in new
+imports or new session snapshots. Detailed change evidence stays in private
+story manifests / `story_compatibility.json`; player responses show version/count
+only. Existing saves and API ledgers are not rewritten. Preserve their exact
+snapshot on recovery; start a separate new save to use corrected data.
+
+No-provider integration checks:
+
+```powershell
+python -m pytest -q
+python scripts/check_windows_bundle.py dist/FishStoryPlayer-Windows-x64.zip --detroit
+python -m fish_story.cli --home PRIVATE_TEST_HOME agent-config --player qa --output connection.json
+node scripts/check_dsh_bridge.mjs --runtime DSH_INSTALL_DIRECTORY --config connection.json --story detroit --campaign
+```
+
+The last command requires a prepared story in that explicitly selected private
+test home. It invokes the actual installed official DSH MCP adapter/tools in a
+fresh isolated registration scope, with scripted choices and no model provider.
+Its success is distinct from an autonomous DSH Agent's model-driven playthrough.
 
 ## Config and state
 

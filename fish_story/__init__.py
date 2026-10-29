@@ -1,2 +1,2 @@
 """Portable, local-first interactive story tools for existing Agents."""
-__version__ = '0.3.0'
+__version__ = '0.4.1'

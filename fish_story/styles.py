@@ -19,7 +19,8 @@ STYLES = {
     'self_aware': {'label': '自知玩家', 'description': '知道自己在玩游戏，携原本的经历与理解面对已见剧情。'},
     'legacy_unspecified': {'label': '旧存档 · 未声明玩法', 'description': '保留旧版提示与上下文，不追溯宣称采用了新玩法。'},
 }
-ALIASES = {'Connor': ('Connor', '康纳'), 'Kara': ('Kara', '卡拉'), 'Markus': ('Markus', '马库斯')}
+ALIASES = {'Connor': ('Connor', '康纳'), 'Kara': ('Kara', '卡拉'), 'Markus': ('Markus', '马库斯'),
+           'North': ('North', '诺丝')}
 RULES = {
     'immersive': (
         'Decision perspective: CHARACTER IMMERSION. Remain the original player with your own identity; '
@@ -63,6 +64,11 @@ def _canonical(value, candidates):
 
 def _visible_label(context, candidates):
     """Recognize only a complete first-line heading, never a narrative name mention."""
+    # Some multi-character finales place North's scene on the Markus engine
+    # track. A visible North heading denotes North's own knowledge stream. It
+    # must override that phase fallback instead of leaking her scene to Markus.
+    if len(candidates) > 1 and 'Markus' in candidates and 'North' not in candidates:
+        candidates = [*candidates, 'North']
     aliases = {alias: candidate for candidate in candidates for alias in ALIASES.get(candidate, (candidate,))}
     if not aliases:
         return None

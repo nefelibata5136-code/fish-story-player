@@ -53,6 +53,12 @@ class StyleModelTests(unittest.TestCase):
         view = self.service.start('generic-test-player', story_id=story['id'], mode='independent',
                                   core_text='CORE_IDENTITY_SENTINEL: a player separate from every story role.',
                                   play_style=style)
+        # These tests pin the pre-recap wire contract. New recap sessions are
+        # exercised independently in test_recap_model.py.
+        meta_path = self.service.session_dir(view['session_id']) / 'session.json'
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        meta.pop('recap_version', None)
+        meta_path.write_text(json.dumps(meta), encoding='utf-8')
         return view['session_id']
 
     def test_immersive_actual_wire_is_per_character_and_resumes_its_prefix(self):

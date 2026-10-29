@@ -17,7 +17,7 @@ def answer(service, view, choice=1, reason='A real fixture choice'):
 def test_named_points_multiple_branches_and_original_save_unchanged(tmp_path):
     service = GameService(tmp_path)
     saves = SaveManager(service)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     start = saves.create_point(source['session_id'], 'Before opening', operation_id='point-zero')
     source = answer(service, source, 1)
     one = saves.create_point(source['session_id'], 'After clue', operation_id='point-one')
@@ -46,7 +46,7 @@ def test_named_points_multiple_branches_and_original_save_unchanged(tmp_path):
 def test_auto_points_current_and_historical_locations(tmp_path):
     service = GameService(tmp_path)
     saves = SaveManager(service)
-    view = service.start('fish')
+    view = service.start('fish', story_id='demo')
     initial = view['current']
     view = answer(service, view)
     middle = copy.deepcopy(view)
@@ -69,7 +69,7 @@ def test_auto_points_current_and_historical_locations(tmp_path):
 def test_operation_ids_are_idempotent_and_conflicts_refused(tmp_path):
     service = GameService(tmp_path)
     saves = SaveManager(service)
-    view = service.start('fish')
+    view = service.start('fish', story_id='demo')
     point = saves.create_point(view['session_id'], 'Beginning', operation_id='create-stable')
     assert saves.create_point(view['session_id'], 'Beginning', operation_id='create-stable') == point
     answer(service, view)
@@ -87,7 +87,7 @@ def test_operation_ids_are_idempotent_and_conflicts_refused(tmp_path):
 
 def test_pause_restore_and_checkpoint_rename(tmp_path):
     service = GameService(tmp_path)
-    view = answer(service, service.start('fish'))
+    view = answer(service, service.start('fish', story_id='demo'))
     service.pause(view['session_id'])
     saves = SaveManager(service)
     point = saves.create_point(view['session_id'], 'Paused here')
@@ -105,7 +105,7 @@ def test_pause_restore_and_checkpoint_rename(tmp_path):
 def test_inherited_origin_survives_multiple_generations(tmp_path):
     service = GameService(tmp_path)
     saves = SaveManager(service)
-    root = answer(service, service.start('fish'))
+    root = answer(service, service.start('fish', story_id='demo'))
     first = saves.fork(root['session_id'], 'auto:1', operation_id='generation-one')
     first = answer(service, first)
     second = saves.fork(first['session_id'], 'auto:2', operation_id='generation-two')
@@ -120,7 +120,7 @@ def test_inherited_origin_survives_multiple_generations(tmp_path):
 
 def test_prefix_does_not_inherit_later_plot_notes_or_later_core_edits(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish', mode='independent', core_text='ORIGINAL_CORE')
+    source = service.start('fish', story_id='demo', mode='independent', core_text='ORIGINAL_CORE')
     saves = SaveManager(service)
     point = saves.create_point(source['session_id'], 'Fresh identity', operation_id='freeze')
     source = answer(service, source)
@@ -138,7 +138,7 @@ def test_prefix_does_not_inherit_later_plot_notes_or_later_core_edits(tmp_path):
 
 def test_invalid_future_points_and_bad_names_leave_game_unchanged(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     for count in (-1, 1, True, '0'):
         with pytest.raises(ValueError, match='INVALID_SAVE_POINT'):
@@ -154,7 +154,7 @@ def test_invalid_future_points_and_bad_names_leave_game_unchanged(tmp_path):
 
 def test_published_target_is_reconciled_after_response_or_receipt_crash(tmp_path):
     service = GameService(tmp_path)
-    source = answer(service, service.start('fish'))
+    source = answer(service, service.start('fish', story_id='demo'))
     saves = SaveManager(service)
     real_build = saves._build_branch
 
@@ -172,7 +172,7 @@ def test_published_target_is_reconciled_after_response_or_receipt_crash(tmp_path
 
 def test_partial_build_retries_same_target_without_publishing_incomplete_game(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     with patch('fish_story.saves.shutil.copyfile', side_effect=OSError('SIMULATED_COPY_FAILURE')):
         with pytest.raises(OSError):
@@ -184,7 +184,7 @@ def test_partial_build_retries_same_target_without_publishing_incomplete_game(tm
 
 def test_changed_pinned_story_refuses_fork_without_changing_checkpoint(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     point = saves.create_point(source['session_id'], 'Pinned')
     chapter = next((service.session_dir(source['session_id']) / 'story').glob('*.json'))
@@ -232,7 +232,7 @@ def test_legacy_v010_save_can_checkpoint_and_branch_without_rewriting_source(tmp
     from fish_story.service import write_json
 
     service = GameService(tmp_path)
-    source = service.start('legacy-player')
+    source = service.start('legacy-player', story_id='demo')
     directory = service.session_dir(source['session_id'])
     meta = json.loads((directory / 'session.json').read_text(encoding='utf-8'))
     for key in ('play_style', 'play_style_version', 'save_name', 'budget_family_id', 'inherited_choices'):
@@ -254,7 +254,7 @@ def test_legacy_v010_save_can_checkpoint_and_branch_without_rewriting_source(tmp
 
 def test_manual_checkpoint_snapshot_corruption_is_refused(tmp_path):
     service = GameService(tmp_path)
-    source = answer(service, service.start('fish', mode='independent', core_text='Original core'))
+    source = answer(service, service.start('fish', story_id='demo', mode='independent', core_text='Original core'))
     saves = SaveManager(service)
     point = saves.create_point(source['session_id'], 'Do not mutate')
     with saves._db(source['session_id']) as db:
@@ -270,7 +270,7 @@ def test_manual_checkpoint_snapshot_corruption_is_refused(tmp_path):
 
 def test_reserved_operation_snapshot_corruption_is_refused_on_retry(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish', mode='independent', core_text='Original core')
+    source = service.start('fish', story_id='demo', mode='independent', core_text='Original core')
     saves = SaveManager(service)
     with patch.object(saves, '_build_branch', side_effect=OSError('SIMULATED_STOP')):
         with pytest.raises(OSError):
@@ -286,7 +286,7 @@ def test_reserved_operation_snapshot_corruption_is_refused_on_retry(tmp_path):
 
 def test_reconcile_fork_is_read_only_and_does_not_create_missing_operations(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     directory = service.session_dir(source['session_id'])
     assert saves.reconcile_fork(source['session_id'], 'auto:0', operation_id='not-created') is None
@@ -302,7 +302,7 @@ def test_reconcile_fork_is_read_only_and_does_not_create_missing_operations(tmp_
 
 def test_reconcile_reserved_but_published_target_does_not_mark_complete(tmp_path):
     service = GameService(tmp_path)
-    source = answer(service, service.start('fish'))
+    source = answer(service, service.start('fish', story_id='demo'))
     saves = SaveManager(service)
     build = saves._build_branch
 
@@ -324,7 +324,7 @@ def test_reconcile_reserved_but_published_target_does_not_mark_complete(tmp_path
 
 def test_reconcile_never_publishes_an_incomplete_staging_target(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     with patch('fish_story.saves.shutil.copyfile', side_effect=OSError('INCOMPLETE')):
         with pytest.raises(OSError):
@@ -336,7 +336,7 @@ def test_reconcile_never_publishes_an_incomplete_staging_target(tmp_path):
 @pytest.mark.parametrize('operation_id', [False, 0, ''])
 def test_invalid_empty_like_operation_ids_are_not_silently_replaced(tmp_path, operation_id):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     with pytest.raises(ValueError, match='INVALID_OPERATION_ID'):
         saves.create_point(source['session_id'], 'Named', operation_id=operation_id)
@@ -349,7 +349,7 @@ def test_reconcile_checks_snapshot_integrity_and_published_metadata(tmp_path):
     from fish_story.service import write_json
 
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     branch = saves.fork(source['session_id'], 'auto:0', operation_id='check-markers')
     meta_path = service.session_dir(branch['session_id']) / 'session.json'
@@ -369,7 +369,7 @@ def test_reconcile_checks_snapshot_integrity_and_published_metadata(tmp_path):
 
 def test_reconcile_point_reads_original_none_count_receipt_without_writes_or_gate(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     directory = service.session_dir(source['session_id'])
     assert saves.reconcile_point(source['session_id'], 'Unknown', operation_id='no-create') is None
@@ -389,7 +389,7 @@ def test_reconcile_point_reads_original_none_count_receipt_without_writes_or_gat
 
 def test_reconcile_point_checks_frozen_snapshot_hash(tmp_path):
     service = GameService(tmp_path)
-    source = service.start('fish')
+    source = service.start('fish', story_id='demo')
     saves = SaveManager(service)
     point = saves.create_point(source['session_id'], 'Point', operation_id='check-point')
     with saves._db(source['session_id']) as db:

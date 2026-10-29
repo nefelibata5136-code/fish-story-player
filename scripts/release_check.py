@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ALLOWED_ROOT = {'README.md', 'LICENSE', 'pyproject.toml', '.gitignore', 'start.cmd', 'AGENTS.md', 'MANIFEST.in'}
+ALLOWED_ROOT = {'README.md', 'AGENT_START.md', 'LICENSE', 'pyproject.toml', '.gitignore', 'start.cmd', 'AGENTS.md', 'MANIFEST.in'}
 ALLOWED_DIRS = {'fish_story', 'tests', 'docs', 'scripts', 'examples', 'integrations', '.github'}
 BLOCKED = {'state', 'data', 'exports', 'checkpoint', 'home', 'sessions', 'node_modules', '.venv', '__pycache__'}
 SECRET = re.compile(r'(?:sk-[A-Za-z0-9_-]{24,}|gh[pousr]_[A-Za-z0-9]{24,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)')

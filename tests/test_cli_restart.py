@@ -11,7 +11,7 @@ def test_cli_across_separate_processes(tmp_path):
                                 capture_output=True, text=True, encoding='utf-8', timeout=30)
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
-    first = cli('new', '--player', 'cli-fixture')
+    first = cli('new', '--player', 'cli-fixture', '--story', 'demo')
     sid = first['session_id']
     assert cli('view', sid) == first
     assert cli('pause', sid)['status'] == 'paused'
@@ -19,6 +19,9 @@ def test_cli_across_separate_processes(tmp_path):
     cli('resume', sid)
     next_view = cli('choose', sid, first['current']['request_id'], '1')
     assert next_view['accepted_choices'] == 1
-    assert cli('view', sid) == next_view
+    restored = cli('view', sid)
+    for key in ('session_id', 'status', 'current', 'accepted_choices', 'play_style', 'perspective'):
+        assert restored[key] == next_view[key]
+    assert next_view['acceptance']['accepted'] is True
     exported = cli('export', sid, '--format', 'json')
     assert exported['records'][0]['choice'] == 1
