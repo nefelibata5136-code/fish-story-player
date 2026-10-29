@@ -19,6 +19,11 @@ INVALID_STORY_CHAPTER INVALID_CHAPTER_NUMBER INVALID_STORY_NODES INVALID_STORY_E
 INVALID_PLAYER_FACING INVALID_SESSION_ID NO_SESSION INVALID_STORY_FILES INVALID_STORY_TITLE
 STORY_FILE_TOO_LARGE_OR_NOT_JSON DUPLICATE_CHAPTER INVALID_PLAYER_ID INVALID_MODE INVALID_PLAY_STYLE INVALID_GAME_CONFIGURATION
 CORE_ONLY_FOR_INDEPENDENT_SESSION NO_STORY NO_CHAPTER SHARE_REQUIRES_STORY_RIGHTS INVALID_EXPORT_FORMAT INVALID_EXPORT_AUDIENCE
+INVALID_SAVE_NAME INVALID_SAVE_POINT INVALID_CHOICE_COUNT SAVE_POINT_NOT_FOUND SAVE_OPERATION_CONFLICT
+OPERATION_CONFLICT INVALID_OPERATION_ID INVALID_CHECKPOINT_ID INVALID_CHECKPOINT_NAME NO_CHECKPOINT
+SAVE_POINT_NOT_VISIBLE MODEL_FAMILY_BUSY MODEL_CALL_UNRESOLVED CHECKPOINT_CORRUPT SAVE_SOURCE_CHANGED
+BUDGET_FAMILY_INVALID BUDGET_FAMILY_NOT_OWNED IN_FLIGHT_SESSION_CHANGED
+NO_SAVE_POINT SAVE_RECOVERY_CONFLICT SAVE_SNAPSHOT_CHANGED
 '''.split())
 
 
@@ -86,6 +91,8 @@ def make_server(service, port=8765):
                     self.reply(service.observe(query['session_id'][0]))
                 elif route.path == '/api/player-view':
                     self.reply(service.view(query['session_id'][0]))
+                elif route.path == '/api/save-points':
+                    self.reply(service.save_points(query['session_id'][0], audience='observer'))
                 elif route.path == '/api/core':
                     sid = query['session_id'][0]
                     core = service.session_dir(sid) / 'core.txt'
@@ -118,7 +125,7 @@ def make_server(service, port=8765):
                     result = service.start(player_id=payload['player_id'], story_id=payload.get('story_id', 'demo'),
                                            chapter=int(payload.get('chapter', 1)), mode=payload.get('mode', 'agent'),
                                            core_text=payload.get('core_text'), difficulty=payload.get('difficulty', 'casual'),
-                                           play_style=payload.get('play_style', 'self_aware'))
+                                           play_style=payload.get('play_style', 'self_aware'), save_name=payload.get('save_name'))
                     result = service.observe(result['session_id'])
                 elif route == '/api/import-story':
                     result = service.import_story(payload['paths'], payload.get('title', '本地章节'))
@@ -131,6 +138,18 @@ def make_server(service, port=8765):
                 elif route in ('/api/pause', '/api/resume'):
                     result = getattr(service, route.rsplit('/', 1)[-1])(payload['session_id'])
                     result = service.observe(payload['session_id'])
+                elif route == '/api/save-point':
+                    result = service.save_point(payload['session_id'], payload['name'],
+                                                choice_count=payload.get('choice_count'), operation_id=payload.get('operation_id'), audience='observer')
+                elif route == '/api/load-point':
+                    result = service.load_save_point(payload['session_id'], payload['point_id'],
+                                                     name=payload.get('name'), operation_id=payload.get('operation_id'), audience='observer')
+                    result = service.observe(result['session_id'])
+                elif route == '/api/rename-save':
+                    result = service.rename_save(payload['session_id'], payload['name'])
+                    result = service.observe(payload['session_id'])
+                elif route == '/api/rename-point':
+                    result = service.rename_save_point(payload['session_id'], payload['point_id'], payload['name'], audience='observer')
                 elif route in ('/api/model-step', '/api/model-status', '/api/model-ack'):
                     from .model import IndependentPlayer
                     player = IndependentPlayer(service, payload['session_id'], payload['config'])

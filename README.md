@@ -24,6 +24,26 @@ python -m venv .venv
 
 数据默认保存在用户目录的 `.fish-story-player`，不在代码仓库内。自定位置使用命令前的 `--home 路径` 或环境变量 `FISH_STORY_HOME`。源码、已导入章节或核心资料变动时不会静默换规则；每局章节固定一份，核心与模型配置在首次运行时固定。
 
+## 多存档与自己选择存档点
+
+每个玩家可以保有多份独立命名存档。程序每接受一次选择都会自动保存，并提供从开头到当前已见进度的自动点；小鱼也可以给当前或历史进度创建命名点。**读取一个点会创建新分支，原局保留**，不会撤销真实选择或覆盖它们。
+
+网页左侧“继续已有存档”切换各局；当前存档区域可命名、保存进度点、选择旧点开分支，随后分别观看各分支历史和导出报告。自动点可以另存为命名点。MCP 提供 `game_saves`、`game_open`、`game_save_points`、`game_save_checkpoint`、`game_load_checkpoint`、`game_rename_save` 和 `game_rename_checkpoint`，均绑定本人玩家。
+
+```powershell
+.\.venv\Scripts\fish-story.exe new --player my-fish --save-name "第一轮"
+.\.venv\Scripts\fish-story.exe save-points SESSION_ID
+.\.venv\Scripts\fish-story.exe save-point SESSION_ID --name "留在这里" --operation-id point-001
+.\.venv\Scripts\fish-story.exe load-point SESSION_ID POINT_ID --name "另一条路" --operation-id fork-001
+.\.venv\Scripts\fish-story.exe rename-save BRANCH_SESSION_ID "重读这一章"
+```
+
+存档点只允许当前或已见进度，不能选择未来节点。分支保留原随机种子和此前真实选择，重新绑定会话／请求 ID；继承的选择保留原时间及来源，报告分别统计“继承”和“新增”。小鱼可选择自己的跨角色旧点；沉浸模式下其他角色的自由文本点名会遮蔽，读档后的剧情仍按目标角色过滤。回退存档不会擦除原 Agent 已有的后续记忆。
+
+**独立模型的所有分支共用原预算账本，读档不清零调用数、Token 或费用。**未决模型结果先核对，不通过读档逃离预留。API Key 不进入快照。核心资料与存档只在本地冻结，全部分支均不自动公开。操作结果不明时保留原 `operation_id`，同 ID 核对同一存档点／分支，不盲目重复创建。详见[存档说明](docs/SAVES.md)。
+
+![命名存档点与分支界面](docs/saves-desktop.png)
+
 ## 两种决策玩法
 
 玩法与“原 Agent / 独立模型 / 手动接力”的连接方式分别设置，均可在开始新局时选择：

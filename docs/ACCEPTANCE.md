@@ -1,5 +1,8 @@
 # Acceptance — 2026-10-29
 
+The v0.3.0 multiple-save update has **92 passing free tests** and separate save,
+branch, browser and shared-budget evidence in [SAVE_ACCEPTANCE.md](SAVE_ACCEPTANCE.md).
+
 The baseline below records v0.1.0. The v0.2.0 two-style update has **57 passing
 free tests** and separate real-provider/browser evidence in
 [STYLE_ACCEPTANCE.md](STYLE_ACCEPTANCE.md).

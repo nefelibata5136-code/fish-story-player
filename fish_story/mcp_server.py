@@ -36,15 +36,57 @@ def build_server(service, player_id=None):
         return service.stories()
 
     @tool
-    def game_start(story_id: str = 'demo', chapter: int = 1, difficulty: str = 'casual', play_style: str = 'self_aware') -> dict:
+    def game_start(story_id: str = 'demo', chapter: int = 1, difficulty: str = 'casual', play_style: str = 'self_aware', save_name: str | None = None) -> dict:
         """Start direct play: self_aware carries your understanding; immersive judges from the controlled character's information. Both retain your identity. The style is fixed for this save; this tool never calls a model."""
         return service.start(player_id=player, story_id=story_id, chapter=chapter, mode='agent', difficulty=difficulty,
-                             play_style=play_style)
+                             play_style=play_style, save_name=save_name)
 
     @tool
     def game_list() -> list[dict]:
         """List this bound player's saved sessions."""
         return [s for s in service.sessions() if s.get('player_id') == player]
+
+    @tool
+    def game_saves() -> list[dict]:
+        """List your independent named saves and branches; no model call or active-save switch."""
+        return [s for s in service.sessions() if s.get('player_id') == player]
+
+    @tool
+    def game_open(session_id: str) -> dict:
+        """Open a chosen owned save. Pass this session ID explicitly in later tools; other saves stay intact."""
+        return view_owned(session_id)
+
+    @tool
+    def game_save_points(session_id: str) -> dict:
+        """List all your already reached save points. Role-specific labels may be redacted; choosing a point opens a separate branch with that target role's bounded history."""
+        view_owned(session_id)
+        return service.save_points(session_id)
+
+    @tool
+    def game_save_checkpoint(session_id: str, name: str, choice_count: int | None = None,
+                             operation_id: str | None = None) -> dict:
+        """Save a named immutable checkpoint at current or previously reached choice count. Supply a unique operation_id; unknown results must be checked, not blindly repeated."""
+        view_owned(session_id)
+        return service.save_point(session_id, name, choice_count=choice_count, operation_id=operation_id)
+
+    @tool
+    def game_load_checkpoint(session_id: str, point_id: str, name: str | None = None,
+                             operation_id: str | None = None) -> dict:
+        """Create a new branch from your reached checkpoint. The old save remains; inherited choices are not new choices. Independent branches share their original API budget."""
+        view_owned(session_id)
+        return service.load_save_point(session_id, point_id, name=name, operation_id=operation_id)
+
+    @tool
+    def game_rename_save(session_id: str, name: str) -> dict:
+        """Rename one owned save for display without altering its identity or history."""
+        view_owned(session_id)
+        return service.rename_save(session_id, name)
+
+    @tool
+    def game_rename_checkpoint(session_id: str, point_id: str, name: str) -> dict:
+        """Rename a reached checkpoint; its saved position and source history remain immutable."""
+        view_owned(session_id)
+        return service.rename_save_point(session_id, point_id, name)
 
     @tool
     def game_view(session_id: str) -> dict:

@@ -119,9 +119,14 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+def ledger_directory(service, session_id):
+    resolver = getattr(service, 'model_ledger_dir', None)
+    return Path(resolver(session_id) if resolver else service.session_dir(session_id))
+
+
 def load_config(service, session_id):
     """Read pinned non-secret configuration for UI/CLI restart; never creates a ledger."""
-    path = Path(service.session_dir(session_id)) / 'model.sqlite'
+    path = ledger_directory(service, session_id) / 'model.sqlite'
     if not path.is_file():
         return None
     try:
@@ -149,7 +154,8 @@ class IndependentPlayer:
             raise ValueError('INVALID_PLAY_STYLE')
         self._style_prompt = (style_instructions(self.play_style)
                               if self.play_style != 'legacy_unspecified' else '')
-        self.db_path = self.directory / 'model.sqlite'
+        self.family_id = initial.get('budget_family_id', session_id)
+        self.db_path = ledger_directory(service, session_id) / 'model.sqlite'
         with self._db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, config TEXT NOT NULL, core_hash TEXT NOT NULL)')
             db.execute('''CREATE TABLE IF NOT EXISTS calls (
@@ -159,6 +165,11 @@ class IndependentPlayer:
                 charged_tokens INTEGER NOT NULL, charged_cost REAL NOT NULL,
                 prompt_bound INTEGER NOT NULL, result TEXT, usage TEXT, error TEXT)''')
             db.execute('BEGIN IMMEDIATE')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(calls)')}
+            if 'session_id' not in columns:
+                db.execute('ALTER TABLE calls ADD COLUMN session_id TEXT')
+                # Existing calls belong to the original family/root session.
+                db.execute('UPDATE calls SET session_id=? WHERE session_id IS NULL', (self.family_id,))
             existing = db.execute('SELECT config,core_hash FROM settings WHERE id=1').fetchone()
             # Budget/rate/model changes require a new independent session. Restarting
             # the process cannot silently reset accounting or reinterpret old costs.
@@ -174,6 +185,9 @@ class IndependentPlayer:
             if existing and existing != (_dump(pinned), core_hash):
                 raise ValueError('MODEL_CONFIG_OR_CORE_CHANGED: create a new session; old ledger is preserved')
             db.execute('INSERT OR IGNORE INTO settings VALUES (1,?,?)', (_dump(pinned), core_hash))
+        marker = getattr(service, 'mark_budget_initialized', None)
+        if marker:
+            marker(session_id)
 
     @contextmanager
     def _db(self):
@@ -187,24 +201,26 @@ class IndependentPlayer:
 
     def status(self):
         with self._db() as db:
-            rows = db.execute('SELECT id,request_id,status,created_at,updated_at,charged_tokens,charged_cost,usage,error FROM calls ORDER BY rowid').fetchall()
-        calls = [dict(zip(('id', 'request_id', 'status', 'created_at', 'updated_at', 'charged_tokens', 'charged_cost', 'usage', 'error'), row)) for row in rows]
+            rows = db.execute('SELECT id,request_id,status,created_at,updated_at,charged_tokens,charged_cost,usage,error,session_id FROM calls ORDER BY rowid').fetchall()
+        calls = [dict(zip(('id', 'request_id', 'status', 'created_at', 'updated_at', 'charged_tokens', 'charged_cost', 'usage', 'error', 'session_id'), row)) for row in rows]
         for item in calls:
             item['usage'] = json.loads(item['usage']) if item['usage'] else None
         return {
             'session_id': self.session_id, 'calls': calls, 'call_count': len(calls),
+            'budget_family_id': self.family_id, 'budget_scope': 'all branches in this save family',
             'accounted_tokens': sum(row['charged_tokens'] for row in calls),
             'accounted_cost': sum(row['charged_cost'] for row in calls),
             'limits': {k: self.config[k] for k in ('max_calls', 'token_budget', 'max_cost')},
             'cost_basis': 'User-declared prices; unresolved calls retain worst-case reservations. Not an official bill.',
-            'blocked': any(row['status'] in ('reserved', 'unknown', 'overrun') for row in calls),
+            'blocked': any(row['status'] in ('reserved', 'unknown', 'overrun', 'ready') for row in calls),
+            'pending_ready_session_ids': sorted({row['session_id'] for row in calls if row['status'] == 'ready'}),
         }
 
     def acknowledge_unknown(self, call_id):
         """Explicit operator action after checking the provider; never refunds a reservation."""
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
-            changed = db.execute("UPDATE calls SET status='acknowledged',updated_at=? WHERE id=? AND status IN ('reserved','unknown','overrun')", (now(), call_id)).rowcount
+            changed = db.execute("UPDATE calls SET status='acknowledged',updated_at=? WHERE id=? AND session_id=? AND status IN ('reserved','unknown','overrun')", (now(), call_id, self.session_id)).rowcount
             if not changed:
                 raise ValueError('NO_UNRESOLVED_CALL')
         return self.status()
@@ -286,7 +302,10 @@ class IndependentPlayer:
                 raise ValueError('MODEL_BUDGET_EXHAUSTED')
             call_id = str(uuid.uuid4())
             timestamp = now()
-            db.execute('INSERT INTO calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', (call_id, request_id, 'reserved', timestamp, timestamp, tokens, cost, tokens, cost, prompt_bound, None, None, None))
+            db.execute('''INSERT INTO calls (id,request_id,status,created_at,updated_at,reserved_tokens,reserved_cost,
+                       charged_tokens,charged_cost,prompt_bound,result,usage,error,session_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                       (call_id, request_id, 'reserved', timestamp, timestamp, tokens, cost, tokens, cost, prompt_bound, None, None, None, self.session_id))
         return call_id, prompt_bound
 
     def _update(self, call_id, **fields):
@@ -299,7 +318,7 @@ class IndependentPlayer:
 
     def _finish_ready(self):
         with self._db() as db:
-            row = db.execute("SELECT id,request_id,result FROM calls WHERE status='ready' ORDER BY rowid LIMIT 1").fetchone()
+            row = db.execute("SELECT id,request_id,result FROM calls WHERE status='ready' AND session_id=? ORDER BY rowid LIMIT 1", (self.session_id,)).fetchone()
         if not row:
             return None
         result = json.loads(row[2])

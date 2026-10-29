@@ -22,6 +22,7 @@ def parser():
     sub.add_parser('stories'); sub.add_parser('sessions')
     imp = sub.add_parser('import-story'); imp.add_argument('paths', nargs='+'); imp.add_argument('--title', default='Local story')
     new = sub.add_parser('new'); new.add_argument('--player', required=True); new.add_argument('--story', default='demo')
+    new.add_argument('--save-name', help='Optional local display name; never used as a path')
     new.add_argument('--chapter', type=int, default=1); new.add_argument('--mode', choices=['agent', 'independent', 'manual'], default='agent')
     new.add_argument('--play-style', choices=['immersive', 'self_aware'], default='self_aware',
                      help='immersive uses the controlled character perspective; self_aware retains player perspective')
@@ -30,6 +31,13 @@ def parser():
         x = sub.add_parser(name); x.add_argument('session_id')
     choose = sub.add_parser('choose'); choose.add_argument('session_id'); choose.add_argument('request_id')
     choose.add_argument('choice', type=int); choose.add_argument('--reason', default='')
+    points = sub.add_parser('save-points'); points.add_argument('session_id'); points.add_argument('--observer', action='store_true')
+    point = sub.add_parser('save-point'); point.add_argument('session_id'); point.add_argument('--name', required=True)
+    point.add_argument('--choice-count', type=int); point.add_argument('--operation-id'); point.add_argument('--observer', action='store_true')
+    load = sub.add_parser('load-point'); load.add_argument('session_id'); load.add_argument('point_id')
+    load.add_argument('--name'); load.add_argument('--operation-id'); load.add_argument('--observer', action='store_true')
+    rename = sub.add_parser('rename-save'); rename.add_argument('session_id'); rename.add_argument('name')
+    rename_point = sub.add_parser('rename-point'); rename_point.add_argument('session_id'); rename_point.add_argument('point_id'); rename_point.add_argument('name'); rename_point.add_argument('--observer', action='store_true')
     exp = sub.add_parser('export'); exp.add_argument('session_id'); exp.add_argument('--format', choices=['json', 'markdown', 'memory'], default='markdown')
     exp.add_argument('--share', action='store_true'); exp.add_argument('--output', type=Path)
     exp.add_argument('--observer', action='store_true', help='Human operator export of the complete witnessed timeline; never feed it to an immersive player')
@@ -87,9 +95,19 @@ def main(argv=None):
         elif args.command == 'new':
             result = service.start(player_id=args.player, story_id=args.story, chapter=args.chapter,
                                    mode=args.mode, core_text=args.core.read_text(encoding='utf-8-sig') if args.core else None,
-                                   difficulty=args.difficulty, play_style=args.play_style)
+                                   difficulty=args.difficulty, play_style=args.play_style, save_name=args.save_name)
         elif args.command in ('view', 'pause', 'resume'): result = getattr(service, args.command)(args.session_id)
         elif args.command == 'choose': result = service.choose(args.session_id, args.request_id, args.choice, args.reason)
+        elif args.command == 'save-points': result = service.save_points(args.session_id, audience='observer' if args.observer else 'player')
+        elif args.command == 'save-point':
+            result = service.save_point(args.session_id, args.name, choice_count=args.choice_count, operation_id=args.operation_id,
+                                        audience='observer' if args.observer else 'player')
+        elif args.command == 'load-point':
+            result = service.load_save_point(args.session_id, args.point_id, name=args.name, operation_id=args.operation_id,
+                                             audience='observer' if args.observer else 'player')
+        elif args.command == 'rename-save': result = service.rename_save(args.session_id, args.name)
+        elif args.command == 'rename-point': result = service.rename_save_point(args.session_id, args.point_id, args.name,
+                                                                             audience='observer' if args.observer else 'player')
         elif args.command == 'core-preview':
             from .model import validate_core
             text = args.path.read_text(encoding='utf-8-sig')

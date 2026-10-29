@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import uuid
 from pathlib import Path
 
@@ -88,6 +89,67 @@ class GameService:
             raise ValueError('INVALID_PLAY_STYLE')
         return ContextStore(self.session_dir(session_id), style)
 
+    def model_ledger_dir(self, session_id):
+        """A branch always resolves the original budget; never fall back to a fresh ledger."""
+        meta = self._meta(session_id)
+        family_id = meta.get('budget_family_id', session_id)
+        try:
+            directory = self.session_dir(family_id)
+            root_meta = self._meta(family_id)
+        except ValueError:
+            raise ValueError('BUDGET_FAMILY_INVALID') from None
+        if root_meta.get('budget_family_id', family_id) != family_id:
+            raise ValueError('BUDGET_FAMILY_INVALID')
+        if root_meta['player_id'] != meta['player_id']:
+            raise ValueError('BUDGET_FAMILY_NOT_OWNED')
+        if (directory / 'model.initialized').exists():
+            ledger = directory / 'model.sqlite'
+            if not ledger.exists():
+                raise ValueError('BUDGET_FAMILY_INVALID: restore the existing ledger; do not reset it')
+            try:
+                db = sqlite3.connect(ledger.resolve().as_uri() + '?mode=ro', uri=True)
+                try:
+                    if not db.execute('SELECT 1 FROM settings WHERE id=1').fetchone():
+                        raise ValueError('BUDGET_FAMILY_INVALID')
+                    db.execute('SELECT id FROM calls LIMIT 1').fetchone()
+                finally:
+                    db.close()
+            except sqlite3.Error:
+                raise ValueError('BUDGET_FAMILY_INVALID: preserve and inspect the existing ledger') from None
+        return directory
+
+    def mark_budget_initialized(self, session_id):
+        marker = self.model_ledger_dir(session_id) / 'model.initialized'
+        try:
+            with marker.open('x', encoding='ascii') as handle:
+                handle.write('Shared family ledger initialized; preserve model.sqlite.\n')
+        except FileExistsError:
+            pass
+
+    def _save_model_gate(self, session_id):
+        if self._meta(session_id)['mode'] != 'independent':
+            return
+        directory = self.model_ledger_dir(session_id)
+        path = directory / 'model.sqlite'
+        if not path.exists():
+            return
+        db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
+        try:
+            busy = db.execute("SELECT 1 FROM calls WHERE status IN ('reserved','unknown','overrun','ready') LIMIT 1").fetchone()
+            if busy:
+                raise ValueError('MODEL_FAMILY_BUSY: inspect the original pending call before saving or loading')
+            initialized = db.execute('SELECT 1 FROM settings WHERE id=1').fetchone()
+        finally:
+            db.close()
+        if initialized:
+            self.mark_budget_initialized(session_id)
+
+    @staticmethod
+    def _save_name(name):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100 or '\x00' in name:
+            raise ValueError('INVALID_SAVE_NAME')
+        return name.strip()
+
     def stories(self):
         docs = [read_json(p) for p in sorted((PACKAGE / 'demo').glob('ch*.json'))]
         result = [{'id': 'demo', 'title': '雾港来信 · 原创演示', 'chapters': [chapter_info(d) for d in docs],
@@ -123,13 +185,15 @@ class GameService:
         write_json(directory / 'manifest.json', manifest)
         return {k: manifest[k] for k in ('id', 'title', 'chapters', 'public_distribution')}
 
-    def start(self, player_id, story_id='demo', chapter=1, mode='agent', core_text=None, difficulty='casual', play_style='self_aware'):
+    def start(self, player_id, story_id='demo', chapter=1, mode='agent', core_text=None, difficulty='casual', play_style='self_aware', save_name=None):
         if not isinstance(player_id, str) or not 1 <= len(player_id.strip()) <= 100:
             raise ValueError('INVALID_PLAYER_ID')
         if mode not in ('agent', 'independent', 'manual'):
             raise ValueError('INVALID_MODE')
         if play_style not in ('immersive', 'self_aware'):
             raise ValueError('INVALID_PLAY_STYLE')
+        if save_name is not None:
+            save_name = self._save_name(save_name)
         if difficulty not in ('casual', 'experienced', 'hardcore') or type(chapter) is not int:
             raise ValueError('INVALID_GAME_CONFIGURATION')
         if mode == 'independent':
@@ -160,6 +224,7 @@ class GameService:
             'story_title': story['title'], 'public_distribution': story['public_distribution'],
             'start_chapter': chapter, 'created_at': now(), 'difficulty': difficulty,
             'play_style': play_style, 'play_style_version': PROMPT_VERSION,
+            'save_name': save_name, 'budget_family_id': session_id, 'inherited_choices': 0,
             'identity_notice': IDENTITY_NOTICE if mode == 'independent' else '原 Agent 或手动玩家作出选择；程序不创建替代玩家。',
             'prior_chapters': 'fresh initial state; earlier chapters were not played in this session' if chapter > 1 else None,
         })
@@ -179,7 +244,89 @@ class GameService:
 
     def observe(self, session_id):
         meta = self._meta(session_id)
-        return decorate({**meta, **self._store(session_id).view('player')}, self.session_dir(session_id))
+        result = decorate({**meta, **self._store(session_id).view('player')}, self.session_dir(session_id))
+        result.setdefault('budget_family_id', session_id)
+        result.setdefault('save_name', None)
+        result.setdefault('inherited_choices', 0)
+        result['new_choice_count'] = result['accepted_choices'] - result['inherited_choices']
+        receipts = {r['request_id']: r for r in result['records']}
+        for event in result['history']:
+            if event['type'] == 'decision' and event.get('request_id') in receipts:
+                r = receipts[event['request_id']]
+                for key in ('inherited', 'origin_session_id', 'origin_record_id', 'origin_time'):
+                    if key in r:
+                        event[key] = r[key]
+        return result
+
+    def rename_save(self, session_id, name):
+        meta = self._meta(session_id)
+        meta['save_name'] = self._save_name(name)
+        write_json(self.session_dir(session_id) / 'session.json', meta)
+        return self.view(session_id)
+
+    def save_points(self, session_id, audience='player'):
+        if audience not in ('player', 'observer'):
+            raise ValueError('INVALID_EXPORT_AUDIENCE')
+        from .saves import SaveManager
+        result = SaveManager(self).list_points(session_id)
+        current = self.view(session_id)
+        if audience == 'player' and current['play_style'] == 'immersive':
+            actors = current.get('perspective', {}).get('controlled_characters', [])
+            # Save controls belong to the player, including a return to another
+            # role. Do not send that role's free-form plot labels as game facts.
+            for point in result['points']:
+                if point.get('controlled_characters') != actors:
+                    point['name'] = '其他角色进度点（名称在完整观测中保留）'
+                    point.pop('name_history', None)
+                    point.pop('snapshot_hash', None)
+                    if isinstance(point.get('current_chapter'), dict):
+                        point['current_chapter'] = {k: v for k, v in point['current_chapter'].items()
+                                                    if k in ('chapter_number', 'protagonist')}
+                    point['label_redacted'] = True
+        result['audience'] = audience
+        return result
+
+    def save_point(self, session_id, name, choice_count=None, operation_id=None, audience='player'):
+        name = self._save_name(name)
+        if audience not in ('player', 'observer'):
+            raise ValueError('INVALID_EXPORT_AUDIENCE')
+        from .saves import SaveManager
+        manager = SaveManager(self)
+        current = self.view(session_id)
+        if operation_id:
+            reconciled = manager.reconcile_point(session_id, name, choice_count, operation_id)
+            if reconciled is not None:
+                return reconciled
+        self._save_model_gate(session_id)
+        target_count = current['accepted_choices'] if choice_count is None else choice_count
+        if type(target_count) is not int or not 0 <= target_count <= current['accepted_choices']:
+            raise ValueError('INVALID_CHOICE_COUNT')
+        result = manager.create_point(session_id, name, choice_count, operation_id)
+        return result
+
+    def rename_save_point(self, session_id, point_id, name, audience='player'):
+        visible = self.save_points(session_id, audience=audience)['points']
+        if not any(p['id'] == point_id for p in visible):
+            raise ValueError('SAVE_POINT_NOT_VISIBLE')
+        from .saves import SaveManager
+        return SaveManager(self).rename_point(session_id, point_id, self._save_name(name))
+
+    def load_save_point(self, session_id, point_id, name=None, operation_id=None, audience='player'):
+        if audience not in ('player', 'observer'):
+            raise ValueError('INVALID_EXPORT_AUDIENCE')
+        if name is not None:
+            name = self._save_name(name)
+        from .saves import SaveManager
+        manager = SaveManager(self)
+        if operation_id:
+            reconciled = manager.reconcile_fork(session_id, point_id, name, operation_id)
+            if reconciled is not None:
+                return reconciled
+        points = self.save_points(session_id, audience=audience)['points']
+        if not any(p['id'] == point_id for p in points):
+            raise ValueError('SAVE_POINT_NOT_VISIBLE' if audience == 'player' else 'SAVE_POINT_NOT_FOUND')
+        self._save_model_gate(session_id)
+        return manager.fork(session_id, point_id, name, operation_id)
 
     def choose(self, session_id, request_id, choice, reason=''):
         current = self.view(session_id)
@@ -207,6 +354,8 @@ class GameService:
                 'player_id': view['player_id'], 'mode': view['mode'], 'identity_notice': view['identity_notice'],
                 'play_style': view['play_style'], 'play_style_label': view['play_style_label'], 'audience': audience,
                 'perspective': view.get('perspective'),
+                'save_name': view.get('save_name'),
+                'lineage': {k: view.get(k) for k in ('parent_session_id', 'parent_checkpoint_id', 'inherited_choices', 'new_choice_count', 'budget_family_id')},
                 'story_title': view['story_title'], 'status': view['status'], 'exported_at': now(),
                 'memory_status': 'program_generated_candidate_not_player_endorsed',
                 'fiction_notice': MEMORY_NOTICE, 'save_location': str(self.session_dir(session_id) / 'games.sqlite'),
@@ -217,16 +366,24 @@ class GameService:
             # No core ever enters exports. Drop freely authored reasons and identifiers before scanning.
             data = copy.deepcopy(data)
             data['player_id'], data['session_id'], data['save_location'] = 'player', 'shared-session', '[local save omitted]'
+            data['save_name'] = '[private save name omitted]'
+            data['lineage'] = {'inherited_choices': view['inherited_choices'], 'new_choice_count': view['new_choice_count']}
             for record in data['records']:
-                for key in ('record_id', 'request_id', 'content_hash'):
+                for key in ('record_id', 'request_id', 'content_hash', 'native_content_hash', 'source_content_hash'):
                     record.pop(key, None)
                 record['public_reason'] = '[public explanation omitted; review locally]'
+                for key in list(record):
+                    if key.startswith(('origin_', 'inherited_from_')):
+                        record.pop(key)
                 record['after'].pop('next_request_id', None)
                 record['after']['save_location'] = '[omitted]'
             for event in data['visible_history']:
                 if event['type'] == 'decision':
                     event['reasoning'] = '[public explanation omitted; review locally]'
                     event.pop('request_id', None)
+                    for key in list(event):
+                        if key.startswith(('origin_', 'inherited_from_')):
+                            event.pop(key)
             data['current'] = None
             data['privacy']['redaction'] = 'identity, save paths, free-form explanations and correlation IDs removed; review required'
         if format == 'json':
@@ -236,6 +393,7 @@ class GameService:
         lines = [f"# {data['story_title']} · {'经历摘要候选' if format == 'memory' else '游玩报告'}", '', MEMORY_NOTICE, '',
                  f"玩家：{data['player_id']} · 会话：{data['session_id']}", f"模式：{data['mode']} · {data['identity_notice']}",
                  f"玩法：{data['play_style_label']} · 阅读范围：{'完整人类观测' if audience == 'observer' else '玩家当前视角'}",
+                 f"存档：{data['save_name'] or '未命名存档'} · 继承选择 {view['inherited_choices']} 条 · 本分支新增 {view['new_choice_count']} 条",
                  f"状态：{data['status']} · 已保存选择：{len(data['records'])}", '',
                  '隐私：本地私人导出，分享前须审核。' if not share else '已做基础脱敏；分享前仍须审核正文和时间等个人信息。', '']
         if format == 'markdown':
@@ -247,14 +405,16 @@ class GameService:
                     lines.extend(f"- {i}. {c['text']}" for i, c in enumerate(event['choices'], 1))
                     lines.append('')
                 elif event['type'] == 'decision':
-                    lines.extend([f"**玩家实际选择：{event['choice_text']}**", f"时间：{event['occurred_at']}",
+                    inherited = '（继承自原存档，非本分支新选择）' if event.get('inherited') else ''
+                    lines.extend([f"**玩家实际选择{inherited}：{event['choice_text']}**", f"时间：{event['occurred_at']}",
                                   f"公开说明：{event['reasoning'] or '未提供'}", ''])
                 elif event['type'] == 'chapter_end':
                     lines.extend([f"### 虚构章节结果：{event['ending']['title']}", '', event['ending']['narrative'], ''])
         else:
             lines.extend(['## 玩家真实行为与公开评价', ''])
             for r in data['records']:
-                lines.extend([f"- 第 {r['chapter'].get('chapter_number', '?')} 章，{r['occurred_at']}：玩家选择“{r['choice_text']}”。",
+                inherited = '（继承旧选择，非新作答）' if r.get('inherited') else ''
+                lines.extend([f"- 第 {r['chapter'].get('chapter_number', '?')} 章，{r['occurred_at']}：玩家选择“{r['choice_text']}”{inherited}。",
                               f"  玩家公开说明：{r['public_reason'] or '未提供；程序不推测动机。'}"])
             lines.extend(['', '## 游戏中的虚构结果（仅限实际已展示）', ''])
             for event in data['visible_history']:
@@ -273,12 +433,20 @@ class GameService:
         output_dir.mkdir(parents=True, exist_ok=True)
         records = []
         for r in view['records']:
+            if r.get('inherited'):
+                continue  # Replayed history is not a new real choice event.
             records.append({'id': r['record_id'], 'source': 'fish-story-player', 'occurred_at': r['occurred_at'],
                             'observed_at': r['observed_at'], 'content_hash': r['content_hash'], 'deleted': False,
                             'evidence': {'session_id': session_id, 'node_ref': r['node_ref'], 'record_id': r['record_id']},
                             'content': r, 'privacy': 'local_private_unreviewed', 'fiction': True})
         content = ''.join(json.dumps(r, ensure_ascii=False, sort_keys=True) + '\n' for r in records)
-        digest = hashlib.sha256(content.encode()).hexdigest()
+        lineage = {'session_id': session_id, 'parent_session_id': view.get('parent_session_id'),
+                   'parent_checkpoint_id': view.get('parent_checkpoint_id'), 'inherited_choices': view['inherited_choices'],
+                   'new_choice_count': view['new_choice_count'],
+                   'inherited_event_references': [{'origin_session_id': r.get('origin_session_id'),
+                                                   'origin_record_id': r.get('origin_record_id')}
+                                                  for r in view['records'] if r.get('inherited')]}
+        digest = hashlib.sha256((content + json.dumps(lineage, sort_keys=True)).encode()).hexdigest()
         snapshot = output_dir / digest
         snapshot.mkdir(exist_ok=True)
         # Split only between complete records; an unusually large record remains intact.
@@ -296,6 +464,7 @@ class GameService:
             (snapshot / name).write_bytes(part.encode('utf-8'))
             files.append({'path': name, 'sha256': hashlib.sha256(part.encode()).hexdigest()})
         manifest = {'source': 'fish-story-player', 'snapshot_id': digest, 'count': len(records), 'files': files,
+                    'lineage': lineage,
                     'privacy': 'local_private_unreviewed', 'automatic_upload': False,
                     'schema': 'fish-story-dots-source/1', 'supports_deletion': 'no deletion API; records immutable',
                     'versions': 'immutable content-addressed snapshots; compare stable record IDs and content_hash'}
