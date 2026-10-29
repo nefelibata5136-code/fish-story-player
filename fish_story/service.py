@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from .engine import Store, now
+from .styles import ContextStore, STYLES, PROMPT_VERSION, decorate, player_projection
 
 PACKAGE = Path(__file__).parent
 IDENTITY_NOTICE = '基于核心身份资料创建的独立游玩会话；不保证复现原系统的认知状态和长期经历。'
@@ -80,7 +81,12 @@ class GameService:
         return read_json(self.session_dir(session_id) / 'session.json')
 
     def _store(self, session_id):
-        return Store(self.session_dir(session_id))
+        style = self._meta(session_id).get('play_style', 'legacy_unspecified')
+        if style == 'legacy_unspecified':
+            return Store(self.session_dir(session_id))
+        if style not in ('immersive', 'self_aware'):
+            raise ValueError('INVALID_PLAY_STYLE')
+        return ContextStore(self.session_dir(session_id), style)
 
     def stories(self):
         docs = [read_json(p) for p in sorted((PACKAGE / 'demo').glob('ch*.json'))]
@@ -117,11 +123,13 @@ class GameService:
         write_json(directory / 'manifest.json', manifest)
         return {k: manifest[k] for k in ('id', 'title', 'chapters', 'public_distribution')}
 
-    def start(self, player_id, story_id='demo', chapter=1, mode='agent', core_text=None, difficulty='casual'):
+    def start(self, player_id, story_id='demo', chapter=1, mode='agent', core_text=None, difficulty='casual', play_style='self_aware'):
         if not isinstance(player_id, str) or not 1 <= len(player_id.strip()) <= 100:
             raise ValueError('INVALID_PLAYER_ID')
         if mode not in ('agent', 'independent', 'manual'):
             raise ValueError('INVALID_MODE')
+        if play_style not in ('immersive', 'self_aware'):
+            raise ValueError('INVALID_PLAY_STYLE')
         if difficulty not in ('casual', 'experienced', 'hardcore') or type(chapter) is not int:
             raise ValueError('INVALID_GAME_CONFIGURATION')
         if mode == 'independent':
@@ -146,11 +154,12 @@ class GameService:
             pinned.append(target)
         if mode == 'independent':
             (directory / 'core.txt').write_text(core_text, encoding='utf-8')
-        Store(directory).start('player', pinned, difficulty)
+        ContextStore(directory, play_style).start('player', pinned, difficulty)
         write_json(directory / 'session.json', {
             'session_id': session_id, 'player_id': player_id.strip(), 'mode': mode, 'story_id': story_id,
             'story_title': story['title'], 'public_distribution': story['public_distribution'],
             'start_chapter': chapter, 'created_at': now(), 'difficulty': difficulty,
+            'play_style': play_style, 'play_style_version': PROMPT_VERSION,
             'identity_notice': IDENTITY_NOTICE if mode == 'independent' else '原 Agent 或手动玩家作出选择；程序不创建替代玩家。',
             'prior_chapters': 'fresh initial state; earlier chapters were not played in this session' if chapter > 1 else None,
         })
@@ -160,14 +169,23 @@ class GameService:
         result = []
         for path in sorted((self.directory / 'sessions').glob('*/session.json')):
             meta = read_json(path)
+            style = meta.get('play_style', 'legacy_unspecified')
+            meta.update(play_style=style, play_style_label=STYLES.get(style, STYLES['legacy_unspecified'])['label'])
             result.append(meta)
         return result
 
     def view(self, session_id):
+        return player_projection(self.observe(session_id))
+
+    def observe(self, session_id):
         meta = self._meta(session_id)
-        return {**meta, **self._store(session_id).view('player')}
+        return decorate({**meta, **self._store(session_id).view('player')}, self.session_dir(session_id))
 
     def choose(self, session_id, request_id, choice, reason=''):
+        current = self.view(session_id)
+        if (current.get('play_style') == 'immersive' and current.get('perspective', {}).get('unavailable')
+                and request_id == (current.get('current') or {}).get('request_id')):
+            raise ValueError('ROLE_PERSPECTIVE_UNAVAILABLE')
         self._store(session_id).mutate('player', 'choose', {'request_id': request_id, 'choice': choice, 'reason': reason})
         return self.view(session_id)
 
@@ -179,12 +197,16 @@ class GameService:
         self._store(session_id).mutate('player', 'resume', {})
         return self.view(session_id)
 
-    def export(self, session_id, format='json', share=False):
-        view = self.view(session_id)
+    def export(self, session_id, format='json', share=False, audience='player'):
+        if audience not in ('player', 'observer'):
+            raise ValueError('INVALID_EXPORT_AUDIENCE')
+        view = self.observe(session_id) if audience == 'observer' else self.view(session_id)
         if share and not view['public_distribution']:
             raise ValueError('SHARE_REQUIRES_STORY_RIGHTS: local imported story is not cleared for redistribution')
         data = {'schema': 'fish-story-experience/1', 'session_id': session_id,
                 'player_id': view['player_id'], 'mode': view['mode'], 'identity_notice': view['identity_notice'],
+                'play_style': view['play_style'], 'play_style_label': view['play_style_label'], 'audience': audience,
+                'perspective': view.get('perspective'),
                 'story_title': view['story_title'], 'status': view['status'], 'exported_at': now(),
                 'memory_status': 'program_generated_candidate_not_player_endorsed',
                 'fiction_notice': MEMORY_NOTICE, 'save_location': str(self.session_dir(session_id) / 'games.sqlite'),
@@ -213,6 +235,7 @@ class GameService:
             raise ValueError('INVALID_EXPORT_FORMAT')
         lines = [f"# {data['story_title']} · {'经历摘要候选' if format == 'memory' else '游玩报告'}", '', MEMORY_NOTICE, '',
                  f"玩家：{data['player_id']} · 会话：{data['session_id']}", f"模式：{data['mode']} · {data['identity_notice']}",
+                 f"玩法：{data['play_style_label']} · 阅读范围：{'完整人类观测' if audience == 'observer' else '玩家当前视角'}",
                  f"状态：{data['status']} · 已保存选择：{len(data['records'])}", '',
                  '隐私：本地私人导出，分享前须审核。' if not share else '已做基础脱敏；分享前仍须审核正文和时间等个人信息。', '']
         if format == 'markdown':
@@ -245,7 +268,7 @@ class GameService:
 
     def export_evidence(self, session_id, output_dir):
         """Small, local-only dots source adapter. Stable IDs/hashes; repeatable snapshots."""
-        view = self.view(session_id)
+        view = self.observe(session_id)
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         records = []

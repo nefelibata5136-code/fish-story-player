@@ -23,6 +23,8 @@ def parser():
     imp = sub.add_parser('import-story'); imp.add_argument('paths', nargs='+'); imp.add_argument('--title', default='Local story')
     new = sub.add_parser('new'); new.add_argument('--player', required=True); new.add_argument('--story', default='demo')
     new.add_argument('--chapter', type=int, default=1); new.add_argument('--mode', choices=['agent', 'independent', 'manual'], default='agent')
+    new.add_argument('--play-style', choices=['immersive', 'self_aware'], default='self_aware',
+                     help='immersive uses the controlled character perspective; self_aware retains player perspective')
     new.add_argument('--core', type=Path); new.add_argument('--difficulty', choices=['casual', 'experienced', 'hardcore'], default='casual')
     for name in ('view', 'pause', 'resume'):
         x = sub.add_parser(name); x.add_argument('session_id')
@@ -30,6 +32,7 @@ def parser():
     choose.add_argument('choice', type=int); choose.add_argument('--reason', default='')
     exp = sub.add_parser('export'); exp.add_argument('session_id'); exp.add_argument('--format', choices=['json', 'markdown', 'memory'], default='markdown')
     exp.add_argument('--share', action='store_true'); exp.add_argument('--output', type=Path)
+    exp.add_argument('--observer', action='store_true', help='Human operator export of the complete witnessed timeline; never feed it to an immersive player')
     core = sub.add_parser('core-preview'); core.add_argument('path', type=Path)
     for name in ('model-step', 'model-run', 'model-status', 'model-ack'):
         x = sub.add_parser(name); x.add_argument('session_id'); x.add_argument('--config', type=Path, required=True, help='JSON config using api_key_env; never store a key')
@@ -84,7 +87,7 @@ def main(argv=None):
         elif args.command == 'new':
             result = service.start(player_id=args.player, story_id=args.story, chapter=args.chapter,
                                    mode=args.mode, core_text=args.core.read_text(encoding='utf-8-sig') if args.core else None,
-                                   difficulty=args.difficulty)
+                                   difficulty=args.difficulty, play_style=args.play_style)
         elif args.command in ('view', 'pause', 'resume'): result = getattr(service, args.command)(args.session_id)
         elif args.command == 'choose': result = service.choose(args.session_id, args.request_id, args.choice, args.reason)
         elif args.command == 'core-preview':
@@ -98,7 +101,8 @@ def main(argv=None):
             methods = {'model-step': 'step', 'model-run': 'run', 'model-status': 'status'}
             result = player.acknowledge_unknown(args.call_id) if args.command == 'model-ack' else getattr(player, methods[args.command])()
         elif args.command == 'export':
-            result = service.export(args.session_id, format=args.format, share=args.share)
+            result = service.export(args.session_id, format=args.format, share=args.share,
+                                    audience='observer' if args.observer else 'player')
             if args.output:
                 content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
                 args.output.parent.mkdir(parents=True, exist_ok=True)

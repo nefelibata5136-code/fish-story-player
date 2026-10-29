@@ -25,17 +25,21 @@ class FixtureService:
     def view(self, sid):
         if sid != 'one': raise ValueError('NO_GAME')
         return self.current
+    def observe(self, sid): return self.view(sid)
     def _meta(self, sid):
         if sid != 'one': raise ValueError('NO_SESSION')
         return {'player_id': self.current['player_id']}
-    def start(self, **kwargs): self.started.append(kwargs); return self.current
+    def start(self, **kwargs):
+        self.started.append(kwargs)
+        self.current = {**self.current, 'play_style': kwargs.get('play_style', 'self_aware')}
+        return self.current
     def choose(self, sid, request_id, choice, reason=''):
         if request_id != 'r1' or choice != 1: raise ValueError('CHOICE_NOT_AVAILABLE')
         self.current = {**self.current, 'accepted_choices': 1}
         return self.current
     def pause(self, sid): self.current = {**self.current, 'status': 'paused'}; return self.current
     def resume(self, sid): self.current = {**self.current, 'status': 'waiting'}; return self.current
-    def export(self, sid, format='json', share=False): return {'format': format, 'share': share}
+    def export(self, sid, format='json', share=False, audience='player'): return {'format': format, 'share': share, 'audience': audience}
     def session_dir(self, sid): return self.directory
 
 
@@ -73,15 +77,16 @@ def test_http_real_flow_and_security(running):
             send(base, '/api/core?session_id=one', headers=headers)
         assert denied.value.code == 403
         assert b'PRIVATE_CORE_SENTINEL' not in denied.value.read()
-    created = send(base, '/api/new', {'player_id': 'fish-one'}, {'X-Fish-CSRF': token})
+    created = send(base, '/api/new', {'player_id': 'fish-one', 'play_style': 'immersive'}, {'X-Fish-CSRF': token})
     assert created['accepted_choices'] == 0
+    assert service.started[-1]['play_style'] == created['play_style'] == 'immersive'
     chosen = send(base, '/api/choose', {'session_id': 'one', 'request_id': 'r1', 'choice': 1}, {'X-Fish-CSRF': token})
     assert chosen['accepted_choices'] == 1
     paused = send(base, '/api/pause', {'session_id': 'one'}, {'X-Fish-CSRF': token})
     assert paused['status'] == 'paused'
     resumed = send(base, '/api/resume', {'session_id': 'one'}, {'X-Fish-CSRF': token})
     assert resumed['status'] == 'waiting'
-    assert send(base, '/api/export?session_id=one&format=memory&share=1')['result'] == {'format': 'memory', 'share': True}
+    assert send(base, '/api/export?session_id=one&format=memory&share=1')['result'] == {'format': 'memory', 'share': True, 'audience': 'observer'}
     assert 'PRIVATE_CORE_SENTINEL' not in json.dumps(send(base, '/api/view?session_id=one'))
 
 
@@ -106,6 +111,29 @@ def test_web_asset_is_self_contained_and_safe(running):
     assert 'devicePixelRatio' not in html
     assert 'api-key' not in html
     assert '核心资料' in html and '记忆候选' in html
+    assert 'id="play-style"' in html and '角色沉浸' in html and '自知玩家' in html
+
+
+def test_http_human_observer_and_player_projection_are_separate(running):
+    base, service = running
+    original = service.view
+    service.observe = lambda sid: {**original(sid), 'history': [{'type': 'node_shown', 'context': 'OBSERVER_ONLY_OTHER_ACTOR'}]}
+    assert 'OBSERVER_ONLY_OTHER_ACTOR' in json.dumps(send(base, '/api/view?session_id=one'))
+    assert 'OBSERVER_ONLY_OTHER_ACTOR' not in json.dumps(send(base, '/api/player-view?session_id=one'))
+    token = send(base, '/api/bootstrap')['csrf']
+    chosen = send(base, '/api/choose', {'session_id': 'one', 'request_id': 'r1', 'choice': 1}, {'X-Fish-CSRF': token})
+    assert chosen['history'][0]['context'] == 'OBSERVER_ONLY_OTHER_ACTOR'
+
+
+def test_cli_new_persists_explicit_play_style(tmp_path, monkeypatch, capsys):
+    from fish_story import cli, service as service_module
+    fixture = FixtureService(tmp_path)
+    monkeypatch.setattr(service_module, 'GameService', lambda directory: fixture)
+    assert cli.main(['--home', str(tmp_path), 'new', '--player', 'fish-one', '--play-style', 'immersive']) == 0
+    assert fixture.started[-1]['play_style'] == 'immersive'
+    assert json.loads(capsys.readouterr().out)['play_style'] == 'immersive'
+    assert cli.main(['--home', str(tmp_path), 'export', 'one', '--format', 'json', '--observer']) == 0
+    assert json.loads(capsys.readouterr().out)['audience'] == 'observer'
 
 
 def test_official_mcp_tools_bind_player_and_never_call_model(tmp_path):
@@ -118,8 +146,13 @@ def test_official_mcp_tools_bind_player_and_never_call_model(tmp_path):
         tools = await server.list_tools()
         names = {tool.name for tool in tools}
         assert {'story_list', 'game_start', 'game_view', 'game_choose', 'game_history', 'game_pause', 'game_resume', 'game_export'} <= names
+        start_schema = next(tool.inputSchema for tool in tools if tool.name == 'game_start')
+        assert start_schema['properties']['play_style']['default'] == 'self_aware'
         result = await server.call_tool('game_view', {'session_id': 'one'})
         assert 'Visible scene' in str(result)
+        service.observe = lambda sid: (_ for _ in ()).throw(RuntimeError('OBSERVER_MUST_NOT_BE_USED_BY_MCP'))
+        exported = await server.call_tool('game_export', {'session_id': 'one'})
+        assert 'player' in str(exported) and 'observer' not in str(exported)
         await server.call_tool('game_choose', {'session_id': 'one', 'request_id': 'r1', 'choice': 1})
         assert service.current['accepted_choices'] == 1
         service.current['player_id'] = 'different-fish'
@@ -178,9 +211,13 @@ def test_official_stdio_subprocess_full_agent_flow(tmp_path):
                 await session.initialize()
                 tools = await session.list_tools()
                 assert 'game_choose' in {tool.name for tool in tools.tools}
-                started = data(await session.call_tool('game_start', {}))
+                started = data(await session.call_tool('game_start', {'play_style': 'immersive'}))
                 sid = started['session_id']
-                current = data(await session.call_tool('game_choices', {'session_id': sid}))['current']
+                assert started['play_style'] == 'immersive'
+                assert service._meta(sid)['play_style'] == 'immersive'
+                choice_result = data(await session.call_tool('game_choices', {'session_id': sid}))
+                assert choice_result['play_style'] == 'immersive' and choice_result['perspective']
+                current = choice_result['current']
                 assert current['context'] and current['choices']
                 rejected = await session.call_tool('game_choose', {'session_id': sid, 'request_id': current['request_id'], 'choice': 999})
                 assert rejected.isError

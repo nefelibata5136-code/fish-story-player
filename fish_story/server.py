@@ -10,15 +10,15 @@ from urllib.parse import parse_qs, urlsplit
 
 SAFE_ERRORS = frozenset('''INVALID_HOST INVALID_ORIGIN INVALID_CSRF JSON_REQUIRED REQUEST_TOO_LARGE PORT_UNAVAILABLE
 INVALID_REQUEST NOT_FOUND PROVIDER_CHECK_REQUIRED FISH_PLAYER_ID_REQUIRED SESSION_NOT_OWNED_BY_BOUND_PLAYER
-INVALID_CORE CORE_TOO_LONG INVALID_CONFIG MODEL_LEDGER_UNREADABLE INDEPENDENT_MODE_REQUIRED
+INVALID_CORE CORE_TOO_LONG INVALID_CONFIG MODEL_LEDGER_UNREADABLE INDEPENDENT_MODE_REQUIRED ROLE_PERSPECTIVE_UNAVAILABLE
 MODEL_CONFIG_OR_CORE_CHANGED NO_UNRESOLVED_CALL UNRESOLVED_MODEL_CALL MODEL_BUDGET_EXHAUSTED
 MODEL_API_KEY_MISSING MODEL_RESULT_UNKNOWN MODEL_USAGE_UNKNOWN MODEL_USAGE_EXCEEDED_RESERVATION
 INVALID_MODEL_CHOICE REPLAY_MISMATCH ENGINE_CHANGED NO_GAME INVALID_ANSWER ANSWER_ALREADY_ACCEPTED
 GAME_PAUSED STALE_REQUEST CHOICE_NOT_AVAILABLE INVALID_NOTE NOTE_ALREADY_SAVED INVALID_ACTION
 INVALID_STORY_CHAPTER INVALID_CHAPTER_NUMBER INVALID_STORY_NODES INVALID_STORY_ENDINGS INVALID_NODE_ID
 INVALID_PLAYER_FACING INVALID_SESSION_ID NO_SESSION INVALID_STORY_FILES INVALID_STORY_TITLE
-STORY_FILE_TOO_LARGE_OR_NOT_JSON DUPLICATE_CHAPTER INVALID_PLAYER_ID INVALID_MODE INVALID_GAME_CONFIGURATION
-CORE_ONLY_FOR_INDEPENDENT_SESSION NO_STORY NO_CHAPTER SHARE_REQUIRES_STORY_RIGHTS INVALID_EXPORT_FORMAT
+STORY_FILE_TOO_LARGE_OR_NOT_JSON DUPLICATE_CHAPTER INVALID_PLAYER_ID INVALID_MODE INVALID_PLAY_STYLE INVALID_GAME_CONFIGURATION
+CORE_ONLY_FOR_INDEPENDENT_SESSION NO_STORY NO_CHAPTER SHARE_REQUIRES_STORY_RIGHTS INVALID_EXPORT_FORMAT INVALID_EXPORT_AUDIENCE
 '''.split())
 
 
@@ -83,6 +83,8 @@ def make_server(service, port=8765):
                 elif route.path == '/api/bootstrap':
                     self.reply({'csrf': token, 'stories': service.stories(), 'sessions': service.sessions()})
                 elif route.path == '/api/view':
+                    self.reply(service.observe(query['session_id'][0]))
+                elif route.path == '/api/player-view':
                     self.reply(service.view(query['session_id'][0]))
                 elif route.path == '/api/core':
                     sid = query['session_id'][0]
@@ -93,7 +95,8 @@ def make_server(service, port=8765):
                     self.reply({'config': load_config(service, query['session_id'][0])})
                 elif route.path == '/api/export':
                     self.reply({'result': service.export(query['session_id'][0],
-                               format=query.get('format', ['json'])[0], share=query.get('share', ['0'])[0] == '1')})
+                               format=query.get('format', ['json'])[0], share=query.get('share', ['0'])[0] == '1',
+                               audience='observer')})
                 else:
                     self.reply({'error': 'NOT_FOUND'}, 404)
             except Exception as exc:
@@ -114,7 +117,9 @@ def make_server(service, port=8765):
                 if route == '/api/new':
                     result = service.start(player_id=payload['player_id'], story_id=payload.get('story_id', 'demo'),
                                            chapter=int(payload.get('chapter', 1)), mode=payload.get('mode', 'agent'),
-                                           core_text=payload.get('core_text'), difficulty=payload.get('difficulty', 'casual'))
+                                           core_text=payload.get('core_text'), difficulty=payload.get('difficulty', 'casual'),
+                                           play_style=payload.get('play_style', 'self_aware'))
+                    result = service.observe(result['session_id'])
                 elif route == '/api/import-story':
                     result = service.import_story(payload['paths'], payload.get('title', '本地章节'))
                 elif route == '/api/core-preview':
@@ -122,8 +127,10 @@ def make_server(service, port=8765):
                     result = validate_core(payload['text'])
                 elif route == '/api/choose':
                     result = service.choose(payload['session_id'], payload['request_id'], payload['choice'], payload.get('reason', ''))
+                    result = service.observe(payload['session_id'])
                 elif route in ('/api/pause', '/api/resume'):
                     result = getattr(service, route.rsplit('/', 1)[-1])(payload['session_id'])
+                    result = service.observe(payload['session_id'])
                 elif route in ('/api/model-step', '/api/model-status', '/api/model-ack'):
                     from .model import IndependentPlayer
                     player = IndependentPlayer(service, payload['session_id'], payload['config'])

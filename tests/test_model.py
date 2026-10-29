@@ -319,6 +319,20 @@ class ModelTests(unittest.TestCase):
             self.player().step()
         self.assertEqual(len(self.provider.requests), 0)
 
+    def test_stale_concurrent_scene_cannot_reserve_a_second_paid_call(self):
+        stale = self.service.view('session')
+        player = self.player()
+        player.step()
+        self.assertEqual(self.service.state['accepted_choices'], 1)
+        before = player.status()
+        # Reproduce a second caller's already-read scene after the first caller
+        # committed. The actual SQLite transaction must reject before HTTP.
+        with patch.object(self.service, 'view', return_value=stale):
+            with self.assertRaisesRegex(ValueError, 'STALE_REQUEST'):
+                self.player().step()
+        self.assertEqual(len(self.provider.requests), 1)
+        self.assertEqual(player.status(), before)
+
     def test_mode_and_endpoint_budget_validation(self):
         for change in ({'max_calls': 0}, {'input_per_million': -1}, {'max_cost': float('nan')},
                        {'base_url': 'http://example.com/v1'}, {'api_key': 'literal'}, {'timeout': 200}):

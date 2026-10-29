@@ -20,6 +20,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from .styles import PROMPT_VERSION, style_instructions
+
 SYSTEM = (
     'You are the player in an independent interactive-story session based on the '
     'identity material below. This is not a migration of the original Agent or its '
@@ -139,8 +141,14 @@ class IndependentPlayer:
         self.config = _config(config)
         self.directory = Path(service.session_dir(session_id))
         self.core = validate_core((self.directory / 'core.txt').read_text(encoding='utf-8'))['content']
-        if service.view(session_id).get('mode') != 'independent':
+        initial = service.view(session_id)
+        if initial.get('mode') != 'independent':
             raise ValueError('INDEPENDENT_MODE_REQUIRED')
+        self.play_style = initial.get('play_style', 'legacy_unspecified')
+        if self.play_style not in ('legacy_unspecified', 'immersive', 'self_aware'):
+            raise ValueError('INVALID_PLAY_STYLE')
+        self._style_prompt = (style_instructions(self.play_style)
+                              if self.play_style != 'legacy_unspecified' else '')
         self.db_path = self.directory / 'model.sqlite'
         with self._db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, config TEXT NOT NULL, core_hash TEXT NOT NULL)')
@@ -155,7 +163,14 @@ class IndependentPlayer:
             # Budget/rate/model changes require a new independent session. Restarting
             # the process cannot silently reset accounting or reinterpret old costs.
             pinned = {k: v for k, v in self.config.items() if k != 'timeout'}
-            core_hash = hashlib.sha256(self.core.encode('utf-8')).hexdigest()
+            # Existing v0.1 sessions retain their exact hash and request prefix.
+            # New sessions pin the decision style and its precise instructions,
+            # so changing a style or upgrading its prompt cannot reset accounting
+            # or silently change the basis of a continuing game.
+            identity = (self.core if self.play_style == 'legacy_unspecified' else
+                        _dump({'core': self.core, 'play_style': self.play_style,
+                               'instructions': self._style_prompt, 'prompt_version': PROMPT_VERSION}))
+            core_hash = hashlib.sha256(identity.encode('utf-8')).hexdigest()
             if existing and existing != (_dump(pinned), core_hash):
                 raise ValueError('MODEL_CONFIG_OR_CORE_CHANGED: create a new session; old ledger is preserved')
             db.execute('INSERT OR IGNORE INTO settings VALUES (1,?,?)', (_dump(pinned), core_hash))
@@ -195,11 +210,34 @@ class IndependentPlayer:
         return self.status()
 
     def messages(self, view=None):
-        """Build an append-only visible transcript. No native role prompt is used."""
+        """Build a visible transcript, isolated per character for immersion.
+
+        The service supplies the bounded player projection. We also verify the
+        actor tags here: an accidentally supplied observer view must not become
+        a model request. Native role prompts and hidden state are never used.
+        """
         view = self.service.view(self.session_id) if view is None else view
-        messages = [{'role': 'system', 'content': SYSTEM + self.core}]
+        self._check_style(view)
+        system = SYSTEM + self.core
+        if self.play_style != 'legacy_unspecified':
+            system += '\n\nDecision style (fixed for this saved game):\n' + self._style_prompt
+        messages = [{'role': 'system', 'content': system}]
+        actor = None
+        if self.play_style == 'immersive':
+            actors = (view.get('perspective') or {}).get('controlled_characters', [])
+            if not isinstance(actors, list) or len(actors) != 1 or not isinstance(actors[0], str) or not actors[0]:
+                raise ValueError('ROLE_PERSPECTIVE_UNAVAILABLE')
+            actor = actors[0]
+            # This opening belongs to the character's own stream and is stable
+            # when switching away and back. It does not rewrite the system head.
+            messages.append({'role': 'user', 'content': _dump({
+                'decision_perspective': 'immersive', 'controlled_character': actor,
+                'scope': 'Only this character\'s already visible game information follows. '
+                         'The player identity remains separate from the fictional character.'})})
         last_scene, last_options = None, []
         for event in view.get('history', []):
+            if actor is not None and event.get('controlled_characters') != [actor]:
+                raise ValueError('ROLE_PERSPECTIVE_UNAVAILABLE')
             kind = event.get('type')
             if kind == 'node_shown':
                 options = [{'number': item.get('number', n), 'text': item['text']} for n, item in enumerate(event.get('choices', []), 1)]
@@ -217,10 +255,16 @@ class IndependentPlayer:
                 messages.append({'role': 'user', 'content': _dump({'fictional_result': {'title': ending.get('title'), 'narrative': ending.get('narrative')}})})
         current = view.get('current')
         if current:
+            if actor is not None and current.get('controlled_characters') != [actor]:
+                raise ValueError('ROLE_PERSPECTIVE_UNAVAILABLE')
             scene = {'chapter': current.get('chapter'), 'context': current.get('context', ''), 'choices': [{'number': item.get('number', n), 'text': item['text']} for n, item in enumerate(current['choices'], 1)]}
             if scene != last_scene:
                 messages.append({'role': 'user', 'content': _dump(scene)})
         return messages
+
+    def _check_style(self, view):
+        if view.get('play_style', 'legacy_unspecified') != self.play_style:
+            raise ValueError('MODEL_CONFIG_OR_CORE_CHANGED: saved play style changed')
 
     def _reserve(self, request_id, messages):
         # Byte-length plus generous per-message overhead is a conservative bound
@@ -232,6 +276,11 @@ class IndependentPlayer:
             db.execute('BEGIN IMMEDIATE')
             if db.execute("SELECT 1 FROM calls WHERE status IN ('reserved','unknown','overrun','ready')").fetchone():
                 raise ValueError('UNRESOLVED_MODEL_CALL: inspect ledger; do not resend blindly')
+            # A concurrent caller can have read the old scene before another
+            # caller applied its answer. Revalidate the receipt in the ledger
+            # before reserving a second paid request for that stale scene.
+            if db.execute("SELECT 1 FROM calls WHERE request_id=? AND status='applied'", (request_id,)).fetchone():
+                raise ValueError('STALE_REQUEST: scene already has an applied model answer; read the game again')
             count, used_tokens, used_cost = db.execute('SELECT COUNT(*),COALESCE(SUM(charged_tokens),0),COALESCE(SUM(charged_cost),0) FROM calls').fetchone()
             if count >= self.config['max_calls'] or used_tokens + tokens > self.config['token_budget'] or used_cost + cost > self.config['max_cost']:
                 raise ValueError('MODEL_BUDGET_EXHAUSTED')
@@ -261,10 +310,11 @@ class IndependentPlayer:
         return {'status': 'applied', 'call_id': row[0], 'view': view, 'budget': self.status()}
 
     def step(self):
+        view = self.service.view(self.session_id)
+        self._check_style(view)
         ready = self._finish_ready()
         if ready is not None:
             return ready
-        view = self.service.view(self.session_id)
         if view.get('status') != 'waiting' or not view.get('current'):
             return {'status': view.get('status'), 'view': view, 'budget': self.status()}
         api_key = os.environ.get(self.config['api_key_env'])

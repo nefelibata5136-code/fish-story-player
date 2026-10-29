@@ -36,9 +36,10 @@ def build_server(service, player_id=None):
         return service.stories()
 
     @tool
-    def game_start(story_id: str = 'demo', chapter: int = 1, difficulty: str = 'casual') -> dict:
-        """Start Agent-direct play. You make choices; this tool never calls a model."""
-        return service.start(player_id=player, story_id=story_id, chapter=chapter, mode='agent', difficulty=difficulty)
+    def game_start(story_id: str = 'demo', chapter: int = 1, difficulty: str = 'casual', play_style: str = 'self_aware') -> dict:
+        """Start direct play: self_aware carries your understanding; immersive judges from the controlled character's information. Both retain your identity. The style is fixed for this save; this tool never calls a model."""
+        return service.start(player_id=player, story_id=story_id, chapter=chapter, mode='agent', difficulty=difficulty,
+                             play_style=play_style)
 
     @tool
     def game_list() -> list[dict]:
@@ -47,14 +48,15 @@ def build_server(service, player_id=None):
 
     @tool
     def game_view(session_id: str) -> dict:
-        """Read current visible scene and save status; no hidden mechanics or future content."""
+        """Read the current player perspective. Immersive play filters game knowledge to the current character; follow perspective instructions. Your existing Agent memory cannot be erased, so do not use another character's private knowledge. No hidden mechanics or future content."""
         return view_owned(session_id)
 
     @tool
     def game_choices(session_id: str) -> dict:
         """Read the pending request and its legal numbered options."""
         view = view_owned(session_id)
-        return {'session_id': session_id, 'status': view['status'], 'current': view.get('current')}
+        return {'session_id': session_id, 'status': view['status'], 'current': view.get('current'),
+                'play_style': view.get('play_style'), 'perspective': view.get('perspective')}
 
     @tool
     def game_choose(session_id: str, request_id: str, choice: int, reason: str = '') -> dict:
@@ -64,9 +66,10 @@ def build_server(service, player_id=None):
 
     @tool
     def game_history(session_id: str) -> dict:
-        """Read the complete visible play history and actual choices."""
+        """Read actual choices and visible history allowed by this save's player perspective; immersive play omits other characters' private game information."""
         view = view_owned(session_id)
-        return {'session_id': session_id, 'history': view.get('history', []), 'records': view.get('records', [])}
+        return {'session_id': session_id, 'history': view.get('history', []), 'records': view.get('records', []),
+                'play_style': view.get('play_style'), 'perspective': view.get('perspective')}
 
     @tool
     def game_pause(session_id: str) -> dict:

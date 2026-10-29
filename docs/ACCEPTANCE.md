@@ -1,5 +1,9 @@
 # Acceptance — 2026-10-29
 
+The baseline below records v0.1.0. The v0.2.0 two-style update has **57 passing
+free tests** and separate real-provider/browser evidence in
+[STYLE_ACCEPTANCE.md](STYLE_ACCEPTANCE.md).
+
 Tested on Windows with Python 3.12. This document separates free software tests,
 real API use, local original-game compatibility, and public distribution.
 

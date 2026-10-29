@@ -8,6 +8,7 @@ discover, inspect, change and cheaply test its own installed copy.
 | Story conditions, probabilities and cross-chapter state | `fish_story/vendor/native/{runner,campaign_runner,resolver,state}.py` |
 | Pending player seam, fixed seed, transaction, receipt | `fish_story/engine.py`, `tests/test_game.py` |
 | Session isolation, local imports, reports, evidence adapter | `fish_story/service.py`, `tests/test_game.py` |
+| Play style, attribution and player/observer scope | `fish_story/styles.py`, `tests/test_styles.py`, `tests/test_style_model.py` |
 | Identity preview, API protocol, prefix and budget ledger | `fish_story/model.py`, `tests/test_model.py` |
 | MCP ownership, safe errors, CLI and loopback console | `fish_story/{mcp_server,cli,server}.py`, `tests/test_interfaces.py` |
 | Screen layout and all visible interactions | `fish_story/web/index.html` |
