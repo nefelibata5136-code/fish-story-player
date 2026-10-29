@@ -1,0 +1,14 @@
+{
+  "base_url": "https://api.deepseek.com",
+  "model": "deepseek-flash",
+  "api_key_env": "FISH_MODEL_API_KEY",
+  "max_calls": 20,
+  "token_budget": 100000,
+  "max_cost": 1.0,
+  "input_per_million": 2.0,
+  "output_per_million": 8.0,
+  "max_output_tokens": 256,
+  "timeout": 60,
+  "thinking": "disabled",
+  "json_mode": true
+}

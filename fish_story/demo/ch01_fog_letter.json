@@ -1,0 +1,15 @@
+{
+  "_meta": {"language": "zh-CN", "license": "CC0-1.0", "author": "Fish Story Player contributors", "original_work": true},
+  "chapter": {"id": "fog_letter_1", "chapter_number": 1, "title": "A Letter in Fog", "title_zh": "雾港来信", "protagonist": "信使岚"},
+  "system_prompt": {"content": ""},
+  "state": {"initial": {"opened": false, "destination": "none"}},
+  "nodes": [
+    {"id": "arrival", "type": "choice", "player_facing": {"context": "这是一个原创的虚构故事。玩家将替信使岚选择行动；岚的经历不改变玩家自己的身份。\n清晨，雾遮住了港口的灯塔。岚收到一封没有寄件人姓名的信，信封上写着：‘请在第一声汽笛响起前，把它送到你认为合适的地方。’封口松动，里面露出一角蓝色纸片。", "choices": [{"id": "read", "text": "先查看蓝色纸片，寻找收件线索"}, {"id": "sealed", "text": "保持信件原样，直接询问港口的人"}]}, "system": {"effects": {"read": {"opened": true}, "sealed": {"opened": false}}}},
+    {"id": "route", "type": "choice", "player_facing": {"context_variants": {"read": "纸片上只画着一扇开着的窗，旁边写着‘我还记得那首歌’。码头值班员说，旧档案馆保存着港口的歌谣，渡船上也有一位常唱歌的老人。汽笛尚未响起。", "sealed": "码头值班员没有认出信封。他说，旧档案馆能查到老住户，渡船上也常有人交换消息。信仍保持原样，汽笛尚未响起。"}, "choices": [{"id": "archive", "text": "去旧档案馆询问信件线索"}, {"id": "ferry", "text": "到渡船上询问唱歌的老人"}]}, "system": {"context_condition": {"read": "opened == true", "sealed": "opened == false"}, "effects": {"archive": {"destination": "archive"}, "ferry": {"destination": "ferry"}}, "ending_resolution": {"archive": {"result": "ending_archive"}, "ferry": {"result": "ending_ferry"}}}}
+  ],
+  "endings": {
+    "ending_archive": {"title": "档案馆的窗", "narrative": "岚推开档案馆的门。管理员接过信，看着封面的字迹，说：‘这封信可能是在等一个愿意听故事的人。’远处响起第一声汽笛。"},
+    "ending_ferry": {"title": "渡船上的歌", "narrative": "岚登上渡船。老人看着信封，哼出一小段没有歌词的旋律。第一声汽笛响起时，他指了指岸上那扇亮着灯的窗。"}
+  },
+  "campaign": {"cross_chapter_exports": ["opened", "destination"], "summary_segments": []}
+}

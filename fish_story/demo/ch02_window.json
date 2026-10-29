@@ -1,0 +1,15 @@
+{
+  "_meta": {"language": "zh-CN", "license": "CC0-1.0", "author": "Fish Story Player contributors", "original_work": true},
+  "chapter": {"id": "fog_letter_2", "chapter_number": 2, "title": "The Open Window", "title_zh": "亮着灯的窗", "protagonist": "信使岚"},
+  "system_prompt": {"content": ""},
+  "state": {"initial": {"opened": false, "destination": "none", "reply": "none"}},
+  "nodes": [
+    {"id": "window", "type": "choice", "player_facing": {"context_variants": {"archive": "管理员陪岚走到档案馆楼上的窗前。窗台放着一本空白的访客簿。她说：‘这座港口有很多没有结尾的故事。你愿意留下哪一部分？’", "ferry": "渡船靠岸后，老人带岚走到那扇亮着灯的窗前。窗台放着一本空白的访客簿。他说：‘这座港口有很多没有结尾的故事。你愿意留下哪一部分？’", "fresh": "岚来到港口一扇亮着灯的窗前。窗台放着一本空白的访客簿，旁边写着：‘这座港口有很多没有结尾的故事。你愿意留下哪一部分？’这是从本章独立开始的经历，没有继承此前的选择。"}, "choices": [{"id": "facts", "text": "写下这次送信途中实际看见的事"}, {"id": "question", "text": "写下一个还没有答案的问题"}, {"id": "blank", "text": "让访客簿保持空白，先听对方讲述"}]}, "system": {"context_condition": {"archive": "destination == archive", "ferry": "destination == ferry", "fresh": "destination == none"}, "effects": {"facts": {"reply": "facts"}, "question": {"reply": "question"}, "blank": {"reply": "blank"}}}},
+    {"id": "reply", "type": "choice", "player_facing": {"context": "窗边的人看了看访客簿，没有评价岚的选择。桌上还有一张新的信纸。雾正在散去，港口的钟响了。‘如果有下一封信，你想怎么收到它？’", "choices": [{"id": "return", "text": "约好某天再来这扇窗前"}, {"id": "leave", "text": "留下一个收信地点，然后离开港口"}]}, "system": {"ending_resolution": {"return": {"result": "ending_return"}, "leave": {"result": "ending_leave"}}}}
+  ],
+  "endings": {
+    "ending_return": {"title": "约定", "narrative": "岚与窗边的人约定了一个再次见面的日子。信已送达，下一次谈话还没有发生。雾港来信的这一段故事到此结束。"},
+    "ending_leave": {"title": "远方的地址", "narrative": "岚留下收信地点，走向港口外的路。有没有下一封信，仍是未知。雾港来信的这一段故事到此结束。"}
+  },
+  "campaign": {"cross_chapter_exports": ["destination", "opened", "reply"], "summary_segments": []}
+}

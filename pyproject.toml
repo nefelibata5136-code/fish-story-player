@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fish-story-player"
+version = "0.1.0"
+description = "Bring your own Agent or identity to an interactive story; keep the experience locally."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["requests>=2.31,<3", "mcp>=1.20,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "build>=1,<2"]
+
+[project.scripts]
+fish-story = "fish_story.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fish_story*"]
+
+[tool.setuptools.package-data]
+fish_story = ["demo/*.json", "web/*.html", "vendor/native/*.py", "vendor/LICENSE.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,93 @@
+"""Official MCP stdio adapter; each process is bound to exactly one player."""
+from __future__ import annotations
+
+import os
+from functools import wraps
+
+from .server import safe_error
+
+
+def build_server(service, player_id=None):
+    from mcp.server.fastmcp import FastMCP
+    player = player_id or os.environ.get('FISH_PLAYER_ID')
+    if not player:
+        raise ValueError('FISH_PLAYER_ID_REQUIRED')
+    mcp = FastMCP('fish-story-player')
+
+    def tool(fn):
+        @wraps(fn)
+        def protected(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                raise ValueError(safe_error(exc)) from None
+        return mcp.tool()(protected)
+
+    def view_owned(session_id):
+        # Check immutable ownership before invoking the private engine/replay.
+        meta = service._meta(session_id)
+        if meta.get('player_id') != player:
+            raise PermissionError('SESSION_NOT_OWNED_BY_BOUND_PLAYER')
+        return service.view(session_id)
+
+    @tool
+    def story_list() -> list[dict]:
+        """List installed local stories and chapter titles, without future scenes."""
+        return service.stories()
+
+    @tool
+    def game_start(story_id: str = 'demo', chapter: int = 1, difficulty: str = 'casual') -> dict:
+        """Start Agent-direct play. You make choices; this tool never calls a model."""
+        return service.start(player_id=player, story_id=story_id, chapter=chapter, mode='agent', difficulty=difficulty)
+
+    @tool
+    def game_list() -> list[dict]:
+        """List this bound player's saved sessions."""
+        return [s for s in service.sessions() if s.get('player_id') == player]
+
+    @tool
+    def game_view(session_id: str) -> dict:
+        """Read current visible scene and save status; no hidden mechanics or future content."""
+        return view_owned(session_id)
+
+    @tool
+    def game_choices(session_id: str) -> dict:
+        """Read the pending request and its legal numbered options."""
+        view = view_owned(session_id)
+        return {'session_id': session_id, 'status': view['status'], 'current': view.get('current')}
+
+    @tool
+    def game_choose(session_id: str, request_id: str, choice: int, reason: str = '') -> dict:
+        """Submit an actual option. reason is an optional brief public explanation, not private reasoning."""
+        view_owned(session_id)
+        return service.choose(session_id, request_id, choice, reason)
+
+    @tool
+    def game_history(session_id: str) -> dict:
+        """Read the complete visible play history and actual choices."""
+        view = view_owned(session_id)
+        return {'session_id': session_id, 'history': view.get('history', []), 'records': view.get('records', [])}
+
+    @tool
+    def game_pause(session_id: str) -> dict:
+        """Pause this game without replacing the player or discarding progress."""
+        view_owned(session_id)
+        return service.pause(session_id)
+
+    @tool
+    def game_resume(session_id: str) -> dict:
+        """Resume the saved pending scene after a pause or restart."""
+        view_owned(session_id)
+        return service.resume(session_id)
+
+    @tool
+    def game_export(session_id: str, format: str = 'json', share: bool = False) -> dict:
+        """Export local JSON, markdown, or unapproved memory candidate. share requests redaction, not publication."""
+        view_owned(session_id)
+        return {'format': format, 'result': service.export(session_id, format=format, share=share)}
+
+    return mcp
+
+
+def run(service, player_id=None):
+    build_server(service, player_id).run(transport='stdio')

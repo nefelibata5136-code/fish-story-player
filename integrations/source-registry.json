@@ -1,0 +1,15 @@
+{
+  "source_id": "fish-story-player",
+  "schema": "fish-story-dots-source/1",
+  "adapter": "integrations/export_dots.py",
+  "entrypoint": "LATEST.json",
+  "default_privacy": "local_private_unreviewed",
+  "automatic_upload": false,
+  "automatic_memory_acceptance": false,
+  "record_types": ["accepted_game_choice"],
+  "stable_id": "run UUID plus accepted request ID",
+  "version_key": "content_hash",
+  "deletion": "No record deletion API; immutable records, deleted=false. New sessions do not replace old sessions.",
+  "observed_time": "receipt commit time, distinct field from occurred_at",
+  "central_collector": "Not automatically discovered. This explicit local adapter is registered here; configure its LATEST path in the consumer."
+}
